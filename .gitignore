@@ -87,3 +87,7 @@ crashlytics-build.properties
 # Ignore Unity builds
 /[Bb]uild/
 /[Bb]uilds/
+
+# third-party asset (OpenCVForUnity)
+Assets/OpenCVForUnity*/
+
