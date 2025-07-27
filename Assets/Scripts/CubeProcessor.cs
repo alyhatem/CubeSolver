@@ -15,6 +15,8 @@ public class CubeProcessor
     public Mat Resized;               // 480×640 BGR
     public readonly List<MatOfPoint> SquareContours = new();
     public readonly List<MatOfPoint> RejectedContours = new();
+    public readonly List<Vector3> MeanLabValues = new();  // LAB color values for each sticker
+    public Vector4 Boundary;          // (minX, minY, maxX, maxY) cube boundary
 
     private static readonly string[] FaceKeys = { "U", "R", "F", "D", "L", "B" };
 
@@ -83,6 +85,9 @@ public class CubeProcessor
         Imgproc.findContours(dilated, contours, hierarchy,
                              Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_SIMPLE);
 
+        Debug.Log($"[DetectSquares] Found {contours.Count} total contours");
+
+        int candidateCount = 0;
         foreach (MatOfPoint c in contours)
         {
             double peri = Imgproc.arcLength(new MatOfPoint2f(c.toArray()), true);
@@ -98,9 +103,23 @@ public class CubeProcessor
             double aspect = Math.Max(w, h) / Math.Min(w, h);
             double area = w * h;
 
-            MatOfPoint box = new(new Point[4]);
-            Imgproc.boxPoints(rect, new MatOfPoint2f(box.toArray()));
-            box = new MatOfPoint(new MatOfPoint2f(box.toArray()).toArray());
+            // Get the 4 corner points of the rotated rectangle
+            MatOfPoint2f boxPoints = new MatOfPoint2f();
+            Imgproc.boxPoints(rect, boxPoints);
+            
+            // Convert to MatOfPoint for contour operations
+            Point[] points = boxPoints.toArray();
+            MatOfPoint box = new MatOfPoint(points);
+            
+            boxPoints.Dispose(); // Clean up
+
+            // Log first few candidates for debugging
+            if (candidateCount < 5)
+            {
+                Debug.Log($"  Candidate {candidateCount}: w={w:F1}, h={h:F1}, aspect={aspect:F2}, area={area:F0} -> " + 
+                         (aspect > 0.8 && aspect < 1.2 && area > 1000 && area < 10000 ? "ACCEPT" : "REJECT"));
+            }
+            candidateCount++;
 
             if (aspect > 0.8 && aspect < 1.2 && area > 1000 && area < 10000)
                 SquareContours.Add(box);
@@ -108,6 +127,8 @@ public class CubeProcessor
                 RejectedContours.Add(box);
         }
 
+        Debug.Log($"[DetectSquares] Valid squares: {SquareContours.Count}, Rejected: {RejectedContours.Count}");
+        
         if (SquareContours.Count == 0)
             throw new Exception($"No valid contours detected in {ImagePath}");
     }
@@ -155,6 +176,11 @@ public class CubeProcessor
                 p.y >= minY - tolY && p.y <= maxY + tolY)
                 SquareContours.Add(c);
         }
+        
+        // Store boundary for recovery algorithm
+        Boundary = new Vector4((float)minX, (float)minY, (float)maxX, (float)maxY);
+        
+        Debug.Log($"[PruneToCubeBoundary] Kept {SquareContours.Count} contours within boundary ({minX:F1},{minY:F1}) to ({maxX:F1},{maxY:F1})");
     }
 
     /* ---------- step 3b: select up-to 9 and sort row-major ---------- */
@@ -195,6 +221,15 @@ public class CubeProcessor
             .ThenBy(p => p.ctr.x)
             .Select(p => p.contour)
             .ToList();
+            
+        Debug.Log($"[SelectAndSortContours] Selected {SortedContours.Count} contours from {SquareContours.Count} candidates");
+        
+        // Log grid positions for debugging
+        for (int i = 0; i < SortedContours.Count; i++)
+        {
+            Point center = ContourCenter(SortedContours[i]);
+            Debug.Log($"  Grid[{i}]: ({center.x:F1}, {center.y:F1})");
+        }
     }
 
     /* ---------- small helpers ---------- */
@@ -211,6 +246,210 @@ public class CubeProcessor
     {
         var arr = sortedVals.OrderBy(v => v).ToArray();
         for (int i = 1; i < arr.Length; ++i) yield return arr[i] - arr[i - 1];
+    }
+
+    /* ---------- step 3c: recover missing contours ---------- */
+    public void RecoverMissingContours()
+    {
+        if (SortedContours.Count >= 9)
+        {
+            Debug.Log("[RecoverMissingContours] Already have 9 contours, skipping recovery");
+            return;
+        }
+        
+        Debug.Log($"[RecoverMissingContours] Starting with {SortedContours.Count} contours, attempting recovery...");
+
+        var acceptedCenters = SortedContours.Select(ContourCenter).ToArray();
+        if (acceptedCenters.Length < 4)
+            return;
+
+        // Calculate grid bounds
+        double minX = acceptedCenters.Min(p => p.x);
+        double maxX = acceptedCenters.Max(p => p.x);
+        double minY = acceptedCenters.Min(p => p.y);
+        double maxY = acceptedCenters.Max(p => p.y);
+
+        double stepX = (maxX - minX) / 2.0;
+        double stepY = (maxY - minY) / 2.0;
+
+        // Generate expected 3x3 grid centers
+        var gridCenters = new List<Point>();
+        for (int i = 0; i < 3; i++)
+        {
+            for (int j = 0; j < 3; j++)
+            {
+                gridCenters.Add(new Point(minX + j * stepX, minY + i * stepY));
+            }
+        }
+
+        double threshold = 0.6 * Math.Min(stepX, stepY);
+
+        // Find missing slots
+        var missingSlots = new List<Point>();
+        foreach (var gridCenter in gridCenters)
+        {
+            bool hasNearbyContour = acceptedCenters.Any(ac => 
+                Distance(gridCenter, ac) <= threshold);
+            
+            if (!hasNearbyContour)
+                missingSlots.Add(gridCenter);
+        }
+
+        // Try to match rejected contours to missing slots
+        var newCandidates = new List<(Point slot, MatOfPoint contour)>();
+        foreach (var contour in RejectedContours)
+        {
+            Point center = ContourCenter(contour);
+            foreach (var slot in missingSlots)
+            {
+                if (Distance(center, slot) < threshold)
+                {
+                    // Additional validation - check if it's reasonably square-like
+                    double peri = Imgproc.arcLength(new MatOfPoint2f(contour.toArray()), true);
+                    MatOfPoint2f approx = new MatOfPoint2f();
+                    Imgproc.approxPolyDP(new MatOfPoint2f(contour.toArray()), approx, 0.04 * peri, true);
+                    
+                    if (approx.total() >= 4)
+                    {
+                        newCandidates.Add((slot, contour));
+                        break;
+                    }
+                    approx.Dispose();
+                }
+            }
+        }
+
+        // Keep closest contour for each missing slot
+        var added = new List<MatOfPoint>();
+        foreach (var slot in missingSlots)
+        {
+            var candidates = newCandidates
+                .Where(nc => Distance(nc.slot, slot) < 0.1) // Same slot
+                .Select(nc => new { distance = Distance(ContourCenter(nc.contour), slot), contour = nc.contour })
+                .ToList();
+
+            if (candidates.Any())
+            {
+                var best = candidates.OrderBy(c => c.distance).First();
+                SortedContours.Add(best.contour);
+                added.Add(best.contour);
+            }
+        }
+
+        Debug.Log($"[RecoverMissingContours] Found {missingSlots.Count} missing slots, added {added.Count} recovered contours");
+        
+        // Re-sort the complete list in row-major order
+        if (added.Any())
+        {
+            var contourData = SortedContours
+                .Select(c => new { contour = c, center = ContourCenter(c) })
+                .OrderBy(cd => cd.center.y)  // Sort by Y first
+                .ToList();
+
+            SortedContours.Clear();
+            
+            // Group into rows and sort each row by X
+            for (int i = 0; i < contourData.Count; i += 3)
+            {
+                var row = contourData.Skip(i).Take(3).OrderBy(cd => cd.center.x);
+                foreach (var item in row)
+                    SortedContours.Add(item.contour);
+            }
+            
+            Debug.Log($"[RecoverMissingContours] Re-sorted grid with {SortedContours.Count} total contours");
+        }
+    }
+
+    /* ---------- step 4: extract colors ---------- */
+    public void ComputeColors()
+    {
+        MeanLabValues.Clear();
+        Debug.Log($"[ComputeColors] Extracting colors from {SortedContours.Count} contours...");
+        
+        int stickerIndex = 0;
+        foreach (var contour in SortedContours)
+        {
+            // Create mask for this contour
+            using (Mat mask = Mat.zeros(Resized.rows(), Resized.cols(), CvType.CV_8UC1))
+            {
+                var contours = new List<MatOfPoint> { contour };
+                Imgproc.drawContours(mask, contours, -1, new Scalar(255), -1);
+
+                // Calculate mean BGR color within the mask
+                Scalar meanBgr = Core.mean(Resized, mask);
+                
+                // Convert BGR to LAB
+                using (Mat bgrMat = new Mat(1, 1, CvType.CV_8UC3, meanBgr))
+                using (Mat labMat = new Mat())
+                {
+                    Imgproc.cvtColor(bgrMat, labMat, Imgproc.COLOR_BGR2Lab);
+                    
+                    // Extract LAB values and convert to proper scale
+                    // LAB Mat will be CV_8UC3, so read as bytes first
+                    byte[] labArray = new byte[3];
+                    labMat.get(0, 0, labArray);
+                    
+                    // Convert to signed type and unscale channels (matching Python)
+                    float L_true = (float)(labArray[0] * 100.0 / 255.0);    // L: 0-100
+                    float A_true = (float)(labArray[1] - 128);              // A: -128 to +127
+                    float B_true = (float)(labArray[2] - 128);              // B: -128 to +127
+                    
+                    Vector3 labColor = new Vector3(L_true, A_true, B_true);
+                    MeanLabValues.Add(labColor);
+                    
+                    // Log detailed color information
+                    Point center = ContourCenter(contour);
+                    Debug.Log($"  Sticker[{stickerIndex}] at ({center.x:F1},{center.y:F1}): LAB({L_true:F1}, {A_true:F1}, {B_true:F1})");
+                    stickerIndex++;
+                }
+            }
+        }
+        
+        Debug.Log($"[ComputeColors] Extracted {MeanLabValues.Count} LAB color values");
+        
+        // Summary of color range for validation
+        if (MeanLabValues.Count > 0)
+        {
+            float minL = MeanLabValues.Min(c => c.x);
+            float maxL = MeanLabValues.Max(c => c.x);
+            float minA = MeanLabValues.Min(c => c.y);
+            float maxA = MeanLabValues.Max(c => c.y);
+            float minB = MeanLabValues.Min(c => c.z);
+            float maxB = MeanLabValues.Max(c => c.z);
+            Debug.Log($"[ComputeColors] LAB ranges - L:[{minL:F1}-{maxL:F1}] A:[{minA:F1}-{maxA:F1}] B:[{minB:F1}-{maxB:F1}]");
+        }
+    }
+
+    /* ---------- main processing pipeline ---------- */
+    public List<Vector3> ProcessImage()
+    {
+        Debug.Log($"[ProcessImage] Starting processing pipeline for {ImagePath}");
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        
+        Mat dilated = ReadAndPreprocess();
+        DetectSquares(dilated);
+        PruneToCubeBoundary();
+        SelectAndSortContours();
+        RecoverMissingContours();
+        ComputeColors();
+        
+        dilated.Dispose(); // Clean up
+        stopwatch.Stop();
+        
+        Debug.Log($"[ProcessImage] ✅ Pipeline complete in {stopwatch.ElapsedMilliseconds}ms");
+        Debug.Log($"[ProcessImage] ✅ Result: {MeanLabValues.Count} stickers with LAB colors extracted");
+        
+        // Final validation
+        if (MeanLabValues.Count == 9)
+        {
+            Debug.Log("[ProcessImage] ✅ SUCCESS: Found exactly 9 stickers (complete 3x3 grid)");
+        }
+        else
+        {
+            Debug.LogWarning($"[ProcessImage] ⚠️  WARNING: Expected 9 stickers, got {MeanLabValues.Count}");
+        }
+        
+        return MeanLabValues;
     }
     
 }

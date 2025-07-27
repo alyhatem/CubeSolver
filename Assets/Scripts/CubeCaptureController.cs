@@ -39,6 +39,7 @@ public class CubeCaptureController : MonoBehaviour
     private readonly string[] faceKeys = { "U", "R", "F", "D", "L", "B" };
     private int currentFaceIndex = 0;
     private Texture2D capturedTexture;
+    private Texture2D fullImageForProcessing; // Store full image separately
 
     void Start()
     {
@@ -188,12 +189,14 @@ public class CubeCaptureController : MonoBehaviour
         // After texture is created and .Apply() is called
         capturedTexture = RotateTexture90CW(capturedTexture);
 
-        // Now crop the rotated texture
-        UnityEngine.Rect cropRect = GetCropRect();  // still in screen space
-        Texture2D cropped = CropTexture(capturedTexture, cropRect);
-        Destroy(capturedTexture);
-
-        capturedTexture = cropped;
+        // For processing: Use full rotated image (better for OpenCV detection)
+        // For preview: Show cropped version
+        UnityEngine.Rect cropRect = GetCropRect();
+        Texture2D croppedForPreview = CropTexture(capturedTexture, cropRect);
+        
+        // Keep full image for processing, cropped for preview
+        fullImageForProcessing = capturedTexture;
+        capturedTexture = croppedForPreview; // This shows in preview
         
         // // Crop to overlay guide
         // Rect cropRect = GetCropRect();
@@ -214,17 +217,22 @@ public class CubeCaptureController : MonoBehaviour
 
     void OnConfirmPressed()
     {
-        if (capturedTexture == null)
+        if (capturedTexture == null || fullImageForProcessing == null)
             return;
 
         string faceKey = faceKeys[currentFaceIndex];
         string path = Path.Combine(Application.persistentDataPath, $"face_{faceKey}.jpg");
-        byte[] jpgData = capturedTexture.EncodeToJPG(95);
+        
+        // Save the FULL image for processing (not the cropped preview)
+        byte[] jpgData = fullImageForProcessing.EncodeToJPG(95);
         File.WriteAllBytes(path, jpgData);
-        Debug.Log($"Saved face {faceKey} to: {path}");
+        Debug.Log($"Saved face {faceKey} to: {path} (full image: {fullImageForProcessing.width}x{fullImageForProcessing.height})");
 
+        // Clean up both textures
         Destroy(capturedTexture);
+        Destroy(fullImageForProcessing);
         capturedTexture = null;
+        fullImageForProcessing = null;
 
         currentFaceIndex++;
         UpdateHint();
@@ -232,21 +240,38 @@ public class CubeCaptureController : MonoBehaviour
 
         if (currentFaceIndex == faceKeys.Length)        // all six faces captured
         {
+            Debug.Log("🎯 [CubeCaptureController] All 6 faces captured! Starting complete processing...");
+            
             var faces     = CubeProcessor.LoadFaces(); 
             var processors = new Dictionary<string, CubeProcessor>();
+            var allFaceResults = new Dictionary<string, List<Vector3>>();
+
+            Debug.Log($"📁 [CubeCaptureController] Loaded {faces.Count} face images for processing");
 
             foreach (var kv in faces)
             {
+                Debug.Log($"🔍 [CubeCaptureController] Processing face {kv.Key}...");
+                
                 var proc = new CubeProcessor(Path.Combine(Application.persistentDataPath,
                                                         $"face_{kv.Key}.jpg"));
 
-                Mat dil = proc.ReadAndPreprocess();
-                proc.DetectSquares(dil);
-                proc.PruneToCubeBoundary();
-                proc.SelectAndSortContours();
+                // Process the complete pipeline and extract LAB colors
+                List<Vector3> labColors = proc.ProcessImage();
+                allFaceResults[kv.Key] = labColors;
 
-                // ─── quick visual sanity-check ───────────────────────
-                Debug.Log($"[{kv.Key}] contours kept: {proc.SortedContours.Count}");
+                // ─── face summary ───────────────────────
+                string status = labColors.Count == 9 ? "✅ SUCCESS" : "⚠️  PARTIAL";
+                Debug.Log($"📊 [CubeCaptureController] Face {kv.Key}: {status} - {proc.SortedContours.Count} contours, {labColors.Count} colors");
+                
+                // Quick LAB statistics for this face
+                if (labColors.Count > 0)
+                {
+                    float avgL = labColors.Average(c => c.x);
+                    float avgA = labColors.Average(c => c.y);
+                    float avgB = labColors.Average(c => c.z);
+                    Debug.Log($"    Average LAB: ({avgL:F1}, {avgA:F1}, {avgB:F1})");
+                }
+                
                 foreach (var c in proc.SortedContours)
                     Imgproc.drawContours(proc.Resized, new List<MatOfPoint> { c },
                                         -1, new Scalar(0, 0, 255), 2);
@@ -261,8 +286,25 @@ public class CubeCaptureController : MonoBehaviour
                 ShowReviewUI();
             }
 
+            // ─── final summary ───────────────────────
+            int totalStickers = allFaceResults.Values.Sum(face => face.Count);
+            int successfulFaces = allFaceResults.Values.Count(face => face.Count == 9);
+            
+            Debug.Log($"🎉 [CubeCaptureController] FINAL SUMMARY:");
+            Debug.Log($"   📊 Total faces processed: {allFaceResults.Count}/6");
+            Debug.Log($"   ✅ Successful faces (9 stickers): {successfulFaces}/6");
+            Debug.Log($"   🎨 Total stickers detected: {totalStickers}/54");
+            
+            if (successfulFaces == 6 && totalStickers == 54)
+            {
+                Debug.Log($"   🏆 PERFECT! Complete cube analysis ready for solving!");
+            }
+            else
+            {
+                Debug.LogWarning($"   ⚠️  Incomplete data - may need to retake some faces");
+            }
 
-            Debug.Log("Initial contour extraction finished for all faces");
+            Debug.Log("📱 [CubeCaptureController] Initial contour extraction finished for all faces");
         }
 
     }
@@ -273,6 +315,11 @@ public class CubeCaptureController : MonoBehaviour
         {
             Destroy(capturedTexture);
             capturedTexture = null;
+        }
+        if (fullImageForProcessing != null)
+        {
+            Destroy(fullImageForProcessing);
+            fullImageForProcessing = null;
         }
         ShowCaptureUI();
     }
