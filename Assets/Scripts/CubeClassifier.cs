@@ -10,8 +10,8 @@ using UnityEngine;
 /// </summary>
 public class CubeClassifier
 {
-    // Face letters mapping: White, Blue, Red, Yellow, Green, Orange
-    private static readonly string[] FaceLetters = { "W", "B", "R", "Y", "G", "O" };
+    // Face letters mapping: Up, Right, Front, Down, Left, Back (Kociemba format)
+    private static readonly string[] FaceLetters = { "U", "R", "F", "D", "L", "B" };
     
     // Debug flags
     private int debugSampleCount = 0;
@@ -107,6 +107,7 @@ public class CubeClassifier
     /// <summary>
     /// Computes CIEDE2000 color difference between two LAB triplets.
     /// Based on the official CIEDE2000 formula with exact Python translation.
+    /// Enhanced with increased hue sensitivity for better red/orange distinction.
     /// </summary>
     /// <param name="lab1">First LAB color (Vector3: x=L, y=A, z=B)</param>
     /// <param name="lab2">Second LAB color (Vector3: x=L, y=A, z=B)</param>
@@ -177,12 +178,17 @@ public class CubeClassifier
         float Sh = 1 + 0.015f * avg_Cp * T;
         float Rt = -Mathf.Sin(2 * delta_ro * Mathf.Deg2Rad) * Rc;
 
-        // Calculate final CIEDE2000 difference
+        // Custom weighting factors for improved cube color classification
+        float kL = 1.0f;  // Lightness weight (standard)
+        float kC = 1.0f;  // Chroma weight (standard)
+        float kH = 2.0f;  // Hue weight (increased for better red/orange distinction)
+
+        // Calculate final CIEDE2000 difference with enhanced hue sensitivity
         float delta_E = Mathf.Sqrt(
-            Mathf.Pow(delta_Lp / Sl, 2) +
-            Mathf.Pow(delta_Cp / Sc, 2) +
-            Mathf.Pow(delta_Hp / Sh, 2) +
-            Rt * (delta_Cp / Sc) * (delta_Hp / Sh)
+            Mathf.Pow(delta_Lp / (kL * Sl), 2) +
+            Mathf.Pow(delta_Cp / (kC * Sc), 2) +
+            Mathf.Pow(delta_Hp / (kH * Sh), 2) +
+            Rt * (delta_Cp / (kC * Sc)) * (delta_Hp / (kH * Sh))
         );
 
         return delta_E;

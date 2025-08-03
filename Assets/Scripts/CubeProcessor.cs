@@ -207,20 +207,28 @@ public class CubeProcessor
             return a >= 0.5 * meanArea && a <= 1.5 * meanArea;
         }).ToList();
 
-        // row-major sort: first by Y, then by X in groups of 3
-        SortedContours = ordered
-            .OrderBy(p => p.ctr.y)
-            .ThenBy(p => p.ctr.x)
-            .Select(p => p.contour)
-            .ToList();
+        // row-major sort: first by Y, then by X in groups of 3 (matching Python)
+        var sortedByY = ordered.OrderBy(p => p.ctr.y).ToList();
+        
+        SortedContours.Clear();
+        for (int i = 0; i < sortedByY.Count; i += 3)
+        {
+            // Take up to 3 contours for this row and sort by X
+            var row = sortedByY.Skip(i).Take(3).OrderBy(p => p.ctr.x);
+            SortedContours.AddRange(row.Select(p => p.contour));
+        }
             
         Debug.Log($"[SelectAndSortContours] Selected {SortedContours.Count} contours from {SquareContours.Count} candidates");
         
-        // Log grid positions for debugging
+        // Log grid positions for debugging (showing 3x3 layout)
+        Debug.Log("[SelectAndSortContours] 3x3 Grid Layout:");
         for (int i = 0; i < SortedContours.Count; i++)
         {
             Point center = ContourCenter(SortedContours[i]);
-            Debug.Log($"  Grid[{i}]: ({center.x:F1}, {center.y:F1})");
+            int row = i / 3;
+            int col = i % 3;
+            string gridPos = row == 1 && col == 1 ? " ← CENTER" : "";
+            Debug.Log($"  Grid[{i}] Row:{row} Col:{col}: ({center.x:F1}, {center.y:F1}){gridPos}");
         }
     }
 
@@ -371,6 +379,13 @@ public class CubeProcessor
                 // Calculate mean BGR color within the mask
                 Scalar meanBgr = Core.mean(Resized, mask);
                 
+                // Validate mask area to ensure we're processing a real sticker
+                double maskArea = Core.countNonZero(mask);
+                if (maskArea < 100) // Minimum reasonable sticker area
+                {
+                    Debug.LogWarning($"[ComputeColors] Sticker {stickerIndex}: Very small mask area ({maskArea} pixels) - possible invalid contour");
+                }
+                
                 // Convert BGR to LAB
                 using (Mat bgrMat = new Mat(1, 1, CvType.CV_8UC3, meanBgr))
                 using (Mat labMat = new Mat())
@@ -393,6 +408,25 @@ public class CubeProcessor
                     float B_true = B_raw - 128;                 // B: -128 to +127
                     
                     Vector3 labColor = new Vector3(L_true, A_true, B_true);
+                    
+                    // Validate LAB values are reasonable
+                    bool isValidLab = L_true >= 0 && L_true <= 100 && 
+                                     A_true >= -128 && A_true <= 127 && 
+                                     B_true >= -128 && B_true <= 127;
+                    
+                    if (!isValidLab)
+                    {
+                        Debug.LogError($"[ComputeColors] Sticker {stickerIndex}: Invalid LAB values - L:{L_true:F1} A:{A_true:F1} B:{B_true:F1}");
+                    }
+                    
+                    // Check for suspicious pure white/neutral values
+                    if (L_true > 99 && Math.Abs(A_true) < 1 && Math.Abs(B_true) < 1)
+                    {
+                        Debug.LogWarning($"[ComputeColors] Sticker {stickerIndex}: Suspicious pure white/neutral LAB({L_true:F1}, {A_true:F1}, {B_true:F1}) - check mask validity");
+                    }
+                    
+                    Debug.Log($"[ComputeColors] Sticker {stickerIndex}: LAB({L_true:F1}, {A_true:F1}, {B_true:F1}), BGR({meanBgr.val[0]:F1}, {meanBgr.val[1]:F1}, {meanBgr.val[2]:F1}), Area:{maskArea}px");
+                    
                     MeanLabValues.Add(labColor);
                     
                     // Log detailed color information

@@ -15,6 +15,7 @@ using OpenCVForUnity.ImgcodecsModule;       // Imgcodecs.imread
 using OpenCVForUnity.UnityUtils;
 using OpenCVForUnity.UnityIntegration;
 using UnityEngine.Rendering.UI;   // add at top of the file for matToTexture2D
+using Kociemba;                   // Kociemba solver integration
 
 
 
@@ -376,6 +377,9 @@ public class CubeCaptureController : MonoBehaviour
                     if (cubeString.Length == 54)
                     {
                         Debug.Log("🏆 [CubeCaptureController] SUCCESS: Ready for cube solving!");
+                        
+                        // ─── PHASE 3: KOCIEMBA SOLVER ───────────────────────
+                        SolveCubeWithKociemba(cubeString);
                     }
                     else
                     {
@@ -487,5 +491,68 @@ public class CubeCaptureController : MonoBehaviour
         if (showContours || !showContours) // Always dispose displayImage since we're cloning now
             displayImage.Dispose();
         rgbImage.Dispose();
+    }
+
+    // ─── KOCIEMBA SOLVER INTEGRATION ─────────────────────────────────────────
+    private void SolveCubeWithKociemba(string cubeString)
+    {
+        Debug.Log("🧮 [CubeCaptureController] Starting Kociemba solver...");
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        
+        try
+        {
+            // Run Kociemba solver with runtime table building
+            string info;
+            string solution = SearchRunTime.solution(cubeString, out info, 
+                maxDepth: 24, timeOut: 10000, useSeparator: true, buildTables: false);
+            
+            stopwatch.Stop();
+            
+            // Check if solver succeeded
+            if (solution.StartsWith("Error"))
+            {
+                Debug.LogError($"❌ [CubeCaptureController] Solver failed: {solution}");
+                Debug.LogError($"   Solver info: {info}");
+            }
+            else
+            {
+                Debug.Log($"🎯 [CubeCaptureController] ✅ SOLVE COMPLETE!");
+                Debug.Log($"⏱️  Solve time: {stopwatch.ElapsedMilliseconds}ms");
+                Debug.Log($"🔄 Solution moves: {solution}");
+                Debug.Log($"📋 Move count: {CountMoves(solution)}");
+                Debug.Log($"ℹ️  Solver info: {info}");
+                
+                // Display formatted solution
+                Debug.Log("📝 [CubeCaptureController] SOLUTION BREAKDOWN:");
+                string[] parts = solution.Split(new string[] { ". " }, System.StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 2)
+                {
+                    Debug.Log($"   Phase 1: {parts[0].Trim()}");
+                    Debug.Log($"   Phase 2: {parts[1].Trim()}");
+                }
+                else
+                {
+                    Debug.Log($"   Complete: {solution.Trim()}");
+                }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            stopwatch.Stop();
+            Debug.LogError($"❌ [CubeCaptureController] Solver exception: {ex.Message}");
+            Debug.LogError($"   Stack trace: {ex.StackTrace}");
+        }
+    }
+    
+    private int CountMoves(string solution)
+    {
+        if (string.IsNullOrEmpty(solution)) return 0;
+        
+        // Remove separators and split by spaces
+        string cleanSolution = solution.Replace(". ", " ").Trim();
+        if (string.IsNullOrEmpty(cleanSolution)) return 0;
+        
+        string[] moves = cleanSolution.Split(new char[] { ' ' }, System.StringSplitOptions.RemoveEmptyEntries);
+        return moves.Length;
     }
 }
