@@ -15,6 +15,7 @@ public class CubeProcessor
     public Mat Resized;               // 480×640 BGR
     public readonly List<MatOfPoint> SquareContours = new();
     public readonly List<MatOfPoint> RejectedContours = new();
+    public readonly List<MatOfPoint> RecoveredContours = new();  // Contours recovered during processing
     public readonly List<Vector3> MeanLabValues = new();  // LAB color values for each sticker
     public Vector4 Boundary;          // (minX, minY, maxX, maxY) cube boundary
 
@@ -103,16 +104,6 @@ public class CubeProcessor
             double aspect = Math.Max(w, h) / Math.Min(w, h);
             double area = w * h;
 
-            // Get the 4 corner points of the rotated rectangle
-            MatOfPoint2f boxPoints = new MatOfPoint2f();
-            Imgproc.boxPoints(rect, boxPoints);
-            
-            // Convert to MatOfPoint for contour operations
-            Point[] points = boxPoints.toArray();
-            MatOfPoint box = new MatOfPoint(points);
-            
-            boxPoints.Dispose(); // Clean up
-
             // Log first few candidates for debugging
             if (candidateCount < 5)
             {
@@ -121,10 +112,11 @@ public class CubeProcessor
             }
             candidateCount++;
 
+            // Use original detected contour instead of artificial rectangle
             if (aspect > 0.8 && aspect < 1.2 && area > 1000 && area < 10000)
-                SquareContours.Add(box);
+                SquareContours.Add(c);
             else
-                RejectedContours.Add(box);
+                RejectedContours.Add(c);
         }
 
         Debug.Log($"[DetectSquares] Valid squares: {SquareContours.Count}, Rejected: {RejectedContours.Count}");
@@ -333,6 +325,7 @@ public class CubeProcessor
                 var best = candidates.OrderBy(c => c.distance).First();
                 SortedContours.Add(best.contour);
                 added.Add(best.contour);
+                RecoveredContours.Add(best.contour); // Track recovered contours
             }
         }
 
@@ -389,10 +382,15 @@ public class CubeProcessor
                     byte[] labArray = new byte[3];
                     labMat.get(0, 0, labArray);
                     
-                    // Convert to signed type and unscale channels (matching Python)
-                    float L_true = (float)(labArray[0] * 100.0 / 255.0);    // L: 0-100
-                    float A_true = (float)(labArray[1] - 128);              // A: -128 to +127
-                    float B_true = (float)(labArray[2] - 128);              // B: -128 to +127
+                    // Convert to signed type first to avoid overflow (matching Python exactly)
+                    short L_raw = (short)labArray[0];
+                    short A_raw = (short)labArray[1]; 
+                    short B_raw = (short)labArray[2];
+                    
+                    // Unscale channels (matching Python exactly)
+                    float L_true = L_raw * 100.0f / 255.0f;    // L: 0-100
+                    float A_true = A_raw - 128;                 // A: -128 to +127  
+                    float B_true = B_raw - 128;                 // B: -128 to +127
                     
                     Vector3 labColor = new Vector3(L_true, A_true, B_true);
                     MeanLabValues.Add(labColor);

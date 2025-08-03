@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using UnityEngine;
 using UnityEngine.UI;
@@ -12,7 +13,8 @@ using OpenCVForUnity.CoreModule;            // Mat, Point, Scalar…
 using OpenCVForUnity.ImgprocModule;         // Imgproc.*
 using OpenCVForUnity.ImgcodecsModule;       // Imgcodecs.imread
 using OpenCVForUnity.UnityUtils;
-using OpenCVForUnity.UnityIntegration;   // add at top of the file for matToTexture2D
+using OpenCVForUnity.UnityIntegration;
+using UnityEngine.Rendering.UI;   // add at top of the file for matToTexture2D
 
 
 
@@ -24,6 +26,7 @@ public class CubeCaptureController : MonoBehaviour
     [Header("UI Panels")]
     public GameObject capturePanel;
     public GameObject reviewPanel;
+    public GameObject debugPanel;
 
     [Header("UI Elements")]
     public TextMeshProUGUI hintText;
@@ -36,16 +39,41 @@ public class CubeCaptureController : MonoBehaviour
     public RectTransform gridOverlay; // Assign your UI overlay in Inspector
     public float cropPadding = 0.1f; // 10% padding
 
+    [Header("Debug UI")]
+    public TMP_Dropdown faceDropdown;
+    public RawImage debugImage;
+    public Button toggleButton;
+    public TextMeshProUGUI toggleButtonText;
+
     private readonly string[] faceKeys = { "U", "R", "F", "D", "L", "B" };
     private int currentFaceIndex = 0;
     private Texture2D capturedTexture;
     private Texture2D fullImageForProcessing; // Store full image separately
+    
+    // Debug data storage
+    private Dictionary<string, Mat> faceImages = new Dictionary<string, Mat>();
+    private Dictionary<string, List<MatOfPoint>> faceSortedContours = new Dictionary<string, List<MatOfPoint>>();
+    private Dictionary<string, List<MatOfPoint>> faceRejectedContours = new Dictionary<string, List<MatOfPoint>>();
+    private Dictionary<string, List<MatOfPoint>> faceRecoveredContours = new Dictionary<string, List<MatOfPoint>>();
+    private bool showContours = false;
+    
+    private string currentSelectedFace = "U";
 
     void Start()
     {
         captureButton.onClick.AddListener(OnCapturePressed);
         confirmButton.onClick.AddListener(OnConfirmPressed);
         retakeButton.onClick.AddListener(OnRetakePressed);
+        
+        // Initialize debug UI
+        if (faceDropdown != null && toggleButton != null)
+        {
+            faceDropdown.onValueChanged.AddListener(OnFaceSelectionChanged);
+            toggleButton.onClick.AddListener(OnToggleContours);
+            if (toggleButtonText != null)
+                toggleButtonText.text = "Show Contours"; // Initial state
+        }
+        
         ShowCaptureUI();
         UpdateHint();
     }
@@ -62,13 +90,22 @@ public class CubeCaptureController : MonoBehaviour
     {
         capturePanel.SetActive(true);
         reviewPanel.SetActive(false);
+        debugPanel.SetActive(false);
     }
 
     void ShowReviewUI()
     {
         capturePanel.SetActive(false);
         reviewPanel.SetActive(true);
+        debugPanel.SetActive(false);
     }
+
+    void ShowDebugUI()
+    {
+        capturePanel.SetActive(false);
+        reviewPanel.SetActive(false);
+        debugPanel.SetActive(true);
+    }   
     private Texture2D RotateTexture90CW(Texture2D src)
     {
         int width = src.width;
@@ -272,18 +309,13 @@ public class CubeCaptureController : MonoBehaviour
                     Debug.Log($"    Average LAB: ({avgL:F1}, {avgA:F1}, {avgB:F1})");
                 }
                 
-                foreach (var c in proc.SortedContours)
-                    Imgproc.drawContours(proc.Resized, new List<MatOfPoint> { c },
-                                        -1, new Scalar(0, 0, 255), 2);
-
-                Texture2D tex = new Texture2D(proc.Resized.cols(), proc.Resized.rows(),
-                                            TextureFormat.RGBA32, false);
-                OpenCVMatUtils.MatToTexture2D(proc.Resized, tex);
-                previewImage.texture = tex;      // reuse the RawImage already in your scene
-                previewImage.rectTransform.sizeDelta =
-                new Vector2(proc.Resized.cols(), proc.Resized.rows());
+                // Store debug data instead of showing preview
+                faceImages[kv.Key] = proc.Resized.clone();
+                faceSortedContours[kv.Key] = new List<MatOfPoint>(proc.SortedContours);
+                faceRejectedContours[kv.Key] = new List<MatOfPoint>(proc.RejectedContours);
+                faceRecoveredContours[kv.Key] = new List<MatOfPoint>(proc.RecoveredContours);
+                
                 processors[kv.Key] = proc;
-                ShowReviewUI();
             }
 
             // ─── final summary ───────────────────────
@@ -295,13 +327,70 @@ public class CubeCaptureController : MonoBehaviour
             Debug.Log($"   ✅ Successful faces (9 stickers): {successfulFaces}/6");
             Debug.Log($"   🎨 Total stickers detected: {totalStickers}/54");
             
+            // Always show debug UI after processing all 6 faces
+            ShowDebugUI();
+            UpdateDebugDisplay(); // Initialize the display
+            
             if (successfulFaces == 6 && totalStickers == 54)
             {
                 Debug.Log($"   🏆 PERFECT! Complete cube analysis ready for solving!");
+                
+                // ─── PHASE 2: COLOR CLASSIFICATION ───────────────────────
+                Debug.Log("🎨 [CubeCaptureController] Starting color classification...");
+                
+                try
+                {
+                    // Convert face results to ordered list for classifier (U, R, F, D, L, B)
+                    var orderedFaceData = new List<List<Vector3>>();
+                    foreach (string faceId in faceKeys)
+                    {
+                        if (allFaceResults.ContainsKey(faceId) && allFaceResults[faceId].Count == 9)
+                        {
+                            orderedFaceData.Add(allFaceResults[faceId]);
+                        }
+                        else
+                        {
+                            Debug.LogError($"❌ [CubeCaptureController] Face {faceId} missing or incomplete!");
+                            return; // Cannot classify without complete data
+                        }
+                    }
+                    
+                    // Perform classification
+                    var classifier = new CubeClassifier();
+                    string cubeString = classifier.Classify(orderedFaceData);
+                    
+                    // ─── CLASSIFICATION RESULTS ───────────────────────
+                    Debug.Log($"🎯 [CubeCaptureController] ✅ CLASSIFICATION COMPLETE!");
+                    Debug.Log($"📋 [CubeCaptureController] Cube String: {cubeString}");
+                    Debug.Log($"📏 [CubeCaptureController] Length: {cubeString.Length}/54 characters");
+                    
+                    // Display per-face classification
+                    for (int i = 0; i < 6; i++)
+                    {
+                        string faceId = faceKeys[i];
+                        string faceClassification = cubeString.Substring(i * 9, 9);
+                        Debug.Log($"   {faceId} face: {faceClassification}");
+                    }
+                    
+                    // Validate result
+                    if (cubeString.Length == 54)
+                    {
+                        Debug.Log("🏆 [CubeCaptureController] SUCCESS: Ready for cube solving!");
+                    }
+                    else
+                    {
+                        Debug.LogError($"❌ [CubeCaptureController] Classification failed: Invalid length {cubeString.Length}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"❌ [CubeCaptureController] Classification error: {ex.Message}");
+                }
             }
             else
             {
                 Debug.LogWarning($"   ⚠️  Incomplete data - may need to retake some faces");
+                Debug.LogWarning("   🔄 Skipping classification until all faces are complete");
             }
 
             Debug.Log("📱 [CubeCaptureController] Initial contour extraction finished for all faces");
@@ -322,5 +411,81 @@ public class CubeCaptureController : MonoBehaviour
             fullImageForProcessing = null;
         }
         ShowCaptureUI();
+    }
+
+    // Debug UI Methods
+    private void OnFaceSelectionChanged(int value)
+    {
+        currentSelectedFace = faceKeys[value];
+        UpdateDebugDisplay();
+    }
+
+    private void OnToggleContours()
+    {
+        showContours = !showContours;
+        if (toggleButtonText != null)
+            toggleButtonText.text = showContours ? "Show Original" : "Show Contours";
+        UpdateDebugDisplay();
+    }
+
+    private void UpdateDebugDisplay()
+    {
+        if (!faceImages.ContainsKey(currentSelectedFace) || debugImage == null) return;
+        
+        Mat displayImage;
+        if (showContours)
+        {
+            // Create copy and draw color-coded contours
+            displayImage = faceImages[currentSelectedFace].clone();
+            
+            // Draw rejected contours in red (BGR format: 0,0,255 = red)
+            if (faceRejectedContours.ContainsKey(currentSelectedFace))
+            {
+                foreach (var contour in faceRejectedContours[currentSelectedFace])
+                {
+                    if (contour != null && contour.total() > 0)
+                        Imgproc.drawContours(displayImage, new List<MatOfPoint> { contour }, -1, new Scalar(0, 0, 255), 2);
+                }
+            }
+            
+            // Draw recovered contours in blue (BGR format: 255,0,0 = blue)
+            if (faceRecoveredContours.ContainsKey(currentSelectedFace))
+            {
+                foreach (var contour in faceRecoveredContours[currentSelectedFace])
+                {
+                    if (contour != null && contour.total() > 0)
+                        Imgproc.drawContours(displayImage, new List<MatOfPoint> { contour }, -1, new Scalar(255, 0, 0), 2);
+                }
+            }
+            
+            // Draw accepted contours in green (BGR format: 0,255,0 = green)
+            if (faceSortedContours.ContainsKey(currentSelectedFace))
+            {
+                foreach (var contour in faceSortedContours[currentSelectedFace])
+                {
+                    if (contour != null && contour.total() > 0)
+                        Imgproc.drawContours(displayImage, new List<MatOfPoint> { contour }, -1, new Scalar(0, 255, 0), 2);
+                }
+            }
+        }
+        else
+        {
+            // Show original image - create a copy to avoid modifying stored data
+            displayImage = faceImages[currentSelectedFace].clone();
+        }
+        
+        // Convert BGR to RGB for Unity display
+        Mat rgbImage = new Mat();
+        Imgproc.cvtColor(displayImage, rgbImage, Imgproc.COLOR_BGR2RGB);
+        
+        // Convert to texture and display
+        Texture2D tex = new Texture2D(rgbImage.cols(), rgbImage.rows(), TextureFormat.RGBA32, false);
+        OpenCVMatUtils.MatToTexture2D(rgbImage, tex);
+        debugImage.texture = tex;
+        
+        // Clean up temporary mats
+        if (showContours || !showContours) // Always dispose displayImage since we're cloning now
+            displayImage.Dispose();
+        rgbImage.Dispose();
     }
 }
