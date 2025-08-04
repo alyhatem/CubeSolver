@@ -329,8 +329,8 @@ public class CubeCaptureController : MonoBehaviour
             Debug.Log($"   🎨 Total stickers detected: {totalStickers}/54");
             
             // Always show debug UI after processing all 6 faces
-            ShowDebugUI();
-            UpdateDebugDisplay(); // Initialize the display
+            // ShowDebugUI();
+            // UpdateDebugDisplay(); // Initialize the display
             
             if (successfulFaces == 6 && totalStickers == 54)
             {
