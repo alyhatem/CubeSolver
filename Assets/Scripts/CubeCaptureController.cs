@@ -145,24 +145,8 @@ public class CubeCaptureController : MonoBehaviour
             max.x = Mathf.Max(max.x, screenPoint.x);
             max.y = Mathf.Max(max.y, screenPoint.y);
         }
-        // Debug.Log("min.x: " + min.x);
-        // Debug.Log("min.y: " + min.y);
-        // Debug.Log("max.x: " + max.x);
-        // Debug.Log("max.y: " + max.y);
-        // Apply padding (10% inward from edges)
         float padX = (max.x - min.x) * cropPadding * 0.5f;
         float padY = (max.y - min.y) * cropPadding * 0.5f;
-        // Debug.Log("padX: " + padX);
-        // Debug.Log("padY: " + padY);
-        // Debug.Log("RectX Pad: " + (min.x + padX));
-        // Debug.Log("RectY Pad: " + (Screen.height - max.y + padY));
-        // Debug.Log("RectWidth Pad: " + ((max.x - min.x) - padX * 2));
-        // Debug.Log("RectHeight Pad: " + ((max.y - min.y) - padY * 2));
-
-        // Debug.Log("RectX: " + min.x);
-        // Debug.Log("RectY: " + (Screen.height - max.y));
-        // Debug.Log("RectWidth: " + (max.x - min.x));
-        // Debug.Log("RectHeight: " + (max.y - min.y));
 
         return new UnityEngine.Rect(min.x, Screen.height - max.y, max.x - min.x, max.y - min.y);
     }
@@ -174,16 +158,12 @@ public class CubeCaptureController : MonoBehaviour
         int y = Mathf.FloorToInt(cropRect.y * src.height / Screen.height);
         int width = Mathf.FloorToInt(cropRect.width * src.width / Screen.width);
         int height = Mathf.FloorToInt(cropRect.height * src.height / Screen.height);
-        // Debug.Log("src width, height: " + src.width + "," + src.height);
-        // Debug.Log("Screen width, height: " + Screen.width + "," + Screen.height);
-        // Debug.Log("x, y, w, h: " + x + ", " + y + ", " + width + ", " + height);
         
         // Clamp to texture dimensions
         x = Mathf.Clamp(x, 0, src.width - 1);
         y = Mathf.Clamp(y, 0, src.height - 1);
         width = Mathf.Clamp(width, 1, src.width - x);
         height = Mathf.Clamp(height, 1, src.height - y);
-        // Debug.Log("Clamped x, y, w, h: " + x + ", " + y + ", " + width + ", " + height);
         
         // Extract pixels
         Color[] pixels = src.GetPixels(x, y, width, height);
@@ -235,18 +215,6 @@ public class CubeCaptureController : MonoBehaviour
         // Keep full image for processing, cropped for preview
         fullImageForProcessing = capturedTexture;
         capturedTexture = croppedForPreview; // This shows in preview
-        
-        // // Crop to overlay guide
-        // Rect cropRect = GetCropRect();
-        // Texture2D cropped = CropTexture(capturedTexture, cropRect);
-        // Destroy(capturedTexture); // Free the rotated version
-
-        // //  Rotate the texture
-        // Texture2D rotated = RotateTexture90CW(cropped);
-        // Destroy(cropped); // Free the original
-
-        // // Set the final cropped texture
-        // capturedTexture = rotated;
 
         previewImage.texture = capturedTexture;
         previewImage.rectTransform.sizeDelta = new Vector2(capturedTexture.width, capturedTexture.height);

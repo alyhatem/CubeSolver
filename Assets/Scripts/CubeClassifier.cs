@@ -179,7 +179,7 @@ public class CubeClassifier
         float Rt = -Mathf.Sin(2 * delta_ro * Mathf.Deg2Rad) * Rc;
 
         // Custom weighting factors for improved cube color classification
-        float kL = 1.0f;  // Lightness weight (standard)
+        float kL = 1.5f;  // Lightness weight (standard)
         float kC = 1.0f;  // Chroma weight (standard)
         float kH = 2.0f;  // Hue weight (increased for better red/orange distinction)
 
