@@ -30,10 +30,9 @@ public class CubeCaptureController : MonoBehaviour
     public GameObject debugPanel;
 
     [Header("UI Elements")]
-    public TextMeshProUGUI hintText;
-    public RawImage previewImage;
+    public TextMeshProUGUI captureGuideText;
+    public TextMeshProUGUI retakeGuideText;
     public Button captureButton;
-    public Button confirmButton;
     public Button retakeButton;
 
     [Header("Crop Settings")]
@@ -59,12 +58,14 @@ public class CubeCaptureController : MonoBehaviour
     private Dictionary<string, List<MatOfPoint>> faceRecoveredContours = new Dictionary<string, List<MatOfPoint>>();
     private bool showContours = false;
     
+    // Color data storage for immediate processing
+    private Dictionary<string, List<Vector3>> faceColorData = new Dictionary<string, List<Vector3>>();
+    
     private string currentSelectedFace = "U";
 
     void Start()
     {
         captureButton.onClick.AddListener(OnCapturePressed);
-        confirmButton.onClick.AddListener(OnConfirmPressed);
         retakeButton.onClick.AddListener(OnRetakePressed);
         
         // Initialize debug UI
@@ -83,9 +84,9 @@ public class CubeCaptureController : MonoBehaviour
     void UpdateHint()
     {
         if (currentFaceIndex < faceKeys.Length)
-            hintText.text = $"Show {descriptiveFaceKeys[currentFaceIndex]} Face";
+            captureGuideText.text = $"Show {descriptiveFaceKeys[currentFaceIndex]} Face";
         else
-            hintText.text = "All faces captured.";
+            captureGuideText.text = "All faces captured.";
     }
 
     void ShowCaptureUI()
@@ -212,18 +213,12 @@ public class CubeCaptureController : MonoBehaviour
         // For preview: Show cropped version
         UnityEngine.Rect cropRect = GetCropRect();
         Texture2D croppedForPreview = CropTexture(capturedTexture, cropRect);
-        
+
         // Keep full image for processing, cropped for preview
         fullImageForProcessing = capturedTexture;
         capturedTexture = croppedForPreview; // This shows in preview
 
-        previewImage.texture = capturedTexture;
-        previewImage.rectTransform.sizeDelta = new Vector2(capturedTexture.width, capturedTexture.height);
-        ShowReviewUI();
-    }
-
-    void OnConfirmPressed()
-    {
+        // ShowReviewUI();
         if (capturedTexture == null || fullImageForProcessing == null)
             return;
 
@@ -241,132 +236,152 @@ public class CubeCaptureController : MonoBehaviour
         capturedTexture = null;
         fullImageForProcessing = null;
 
-        currentFaceIndex++;
-        UpdateHint();
-        ShowCaptureUI();
+        // IMMEDIATE PROCESSING: Run ProcessImage() on the just-saved image
+        ProcessCapturedFace(faceKey, path);
+    }
 
-        if (currentFaceIndex == faceKeys.Length)        // all six faces captured
+    void ProcessCapturedFace(string faceKey, string imagePath)
+    {
+        Debug.Log($"🔍 [CubeCaptureController] Processing face {faceKey} immediately...");
+        
+        try
         {
-            Debug.Log("🎯 [CubeCaptureController] All 6 faces captured! Starting complete processing...");
+            var processor = new CubeProcessor(imagePath);
+            List<Vector3> labColors = processor.ProcessImage();
             
-            var faces     = CubeProcessor.LoadFaces(); 
-            var processors = new Dictionary<string, CubeProcessor>();
-            var allFaceResults = new Dictionary<string, List<Vector3>>();
-
-            Debug.Log($"📁 [CubeCaptureController] Loaded {faces.Count} face images for processing");
-
-            foreach (var kv in faces)
+            if (labColors.Count == 9)
             {
-                Debug.Log($"🔍 [CubeCaptureController] Processing face {kv.Key}...");
+                // SUCCESS: 9 stickers detected - store colors and auto-advance
+                faceColorData[faceKey] = labColors;
                 
-                var proc = new CubeProcessor(Path.Combine(Application.persistentDataPath,
-                                                        $"face_{kv.Key}.jpg"));
-
-                // Process the complete pipeline and extract LAB colors
-                List<Vector3> labColors = proc.ProcessImage();
-                allFaceResults[kv.Key] = labColors;
-
-                // ─── face summary ───────────────────────
-                string status = labColors.Count == 9 ? "✅ SUCCESS" : "⚠️  PARTIAL";
-                Debug.Log($"📊 [CubeCaptureController] Face {kv.Key}: {status} - {proc.SortedContours.Count} contours, {labColors.Count} colors");
+                // Store debug data
+                faceImages[faceKey] = processor.Resized.clone();
+                faceSortedContours[faceKey] = new List<MatOfPoint>(processor.SortedContours);
+                faceRejectedContours[faceKey] = new List<MatOfPoint>(processor.RejectedContours);
+                faceRecoveredContours[faceKey] = new List<MatOfPoint>(processor.RecoveredContours);
                 
-                // Quick LAB statistics for this face
-                if (labColors.Count > 0)
+                Debug.Log($"✅ [CubeCaptureController] Face {faceKey}: SUCCESS - 9 stickers detected, auto-advancing");
+                
+                // Auto-advance to next face
+                currentFaceIndex++;
+                UpdateHint();
+                ShowCaptureUI();
+                
+                // Brief success feedback
+                StartCoroutine(ShowSuccessFeedback($"{descriptiveFaceKeys[currentFaceIndex - 1]} Face Captured!"));
+                
+                // Check if all faces are complete
+                if (currentFaceIndex == faceKeys.Length)
                 {
-                    float avgL = labColors.Average(c => c.x);
-                    float avgA = labColors.Average(c => c.y);
-                    float avgB = labColors.Average(c => c.z);
-                    Debug.Log($"    Average LAB: ({avgL:F1}, {avgA:F1}, {avgB:F1})");
-                }
-                
-                // Store debug data instead of showing preview
-                faceImages[kv.Key] = proc.Resized.clone();
-                faceSortedContours[kv.Key] = new List<MatOfPoint>(proc.SortedContours);
-                faceRejectedContours[kv.Key] = new List<MatOfPoint>(proc.RejectedContours);
-                faceRecoveredContours[kv.Key] = new List<MatOfPoint>(proc.RecoveredContours);
-                
-                processors[kv.Key] = proc;
-            }
-
-            // ─── final summary ───────────────────────
-            int totalStickers = allFaceResults.Values.Sum(face => face.Count);
-            int successfulFaces = allFaceResults.Values.Count(face => face.Count == 9);
-            
-            Debug.Log($"🎉 [CubeCaptureController] FINAL SUMMARY:");
-            Debug.Log($"   📊 Total faces processed: {allFaceResults.Count}/6");
-            Debug.Log($"   ✅ Successful faces (9 stickers): {successfulFaces}/6");
-            Debug.Log($"   🎨 Total stickers detected: {totalStickers}/54");
-            
-            // Always show debug UI after processing all 6 faces
-            // ShowDebugUI();
-            // UpdateDebugDisplay(); // Initialize the display
-            
-            if (successfulFaces == 6 && totalStickers == 54)
-            {
-                Debug.Log($"   🏆 PERFECT! Complete cube analysis ready for solving!");
-                
-                // ─── PHASE 2: COLOR CLASSIFICATION ───────────────────────
-                Debug.Log("🎨 [CubeCaptureController] Starting color classification...");
-                
-                try
-                {
-                    // Convert face results to ordered list for classifier (U, R, F, D, L, B)
-                    var orderedFaceData = new List<List<Vector3>>();
-                    foreach (string faceId in faceKeys)
-                    {
-                        if (allFaceResults.ContainsKey(faceId) && allFaceResults[faceId].Count == 9)
-                        {
-                            orderedFaceData.Add(allFaceResults[faceId]);
-                        }
-                        else
-                        {
-                            Debug.LogError($"❌ [CubeCaptureController] Face {faceId} missing or incomplete!");
-                            return; // Cannot classify without complete data
-                        }
-                    }
-                    
-                    // Perform classification
-                    var classifier = new CubeClassifier();
-                    string cubeString = classifier.Classify(orderedFaceData);
-                    
-                    // ─── CLASSIFICATION RESULTS ───────────────────────
-                    Debug.Log($"🎯 [CubeCaptureController] ✅ CLASSIFICATION COMPLETE!");
-                    Debug.Log($"📋 [CubeCaptureController] Cube String: {cubeString}");
-                    Debug.Log($"📏 [CubeCaptureController] Length: {cubeString.Length}/54 characters");
-                    
-                    // Display per-face classification
-                    for (int i = 0; i < 6; i++)
-                    {
-                        string faceId = faceKeys[i];
-                        string faceClassification = cubeString.Substring(i * 9, 9);
-                        Debug.Log($"   {faceId} face: {faceClassification}");
-                    }
-                    
-                    // Validate result
-                    if (cubeString.Length == 54)
-                    {
-                        Debug.Log("🏆 [CubeCaptureController] SUCCESS: Ready for cube solving!");
-                        
-                        // ─── PHASE 3: KOCIEMBA SOLVER ───────────────────────
-                        SolveCubeWithKociemba(cubeString);
-                    }
-                    else
-                    {
-                        Debug.LogError($"❌ [CubeCaptureController] Classification failed: Invalid length {cubeString.Length}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogError($"❌ [CubeCaptureController] Classification error: {ex.Message}");
+                    ProcessAllStoredFaces();
                 }
             }
             else
             {
-                Debug.LogWarning($"   ⚠️  Incomplete data - may need to retake some faces");
-                Debug.LogWarning("   🔄 Skipping classification until all faces are complete");
+                // FAILURE: Less than 9 stickers - show review panel
+                Debug.Log($"⚠️ [CubeCaptureController] Face {faceKey}: Only {labColors.Count} stickers detected - showing review panel");
+                ShowReviewUI();
+                
+                // Update hint text with specific feedback
+                retakeGuideText.text = $"Only {labColors.Count} stickers detected";
             }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"❌ [CubeCaptureController] Processing error for face {faceKey}: {ex.Message}");
+            ShowReviewUI();
+            retakeGuideText.text = "Processing Failed";
+        }
+    }
+    
+    System.Collections.IEnumerator ShowSuccessFeedback(string message)
+    {
+        string originalText = captureGuideText.text;
+        
+        captureGuideText.text = message;
+        
+        yield return new WaitForSeconds(1.5f);
+        
+        captureGuideText.text = originalText;
+    }
+    
+    void ProcessAllStoredFaces()
+    {
+        Debug.Log("🎯 [CubeCaptureController] All 6 faces captured and processed! Starting classification...");
+        
+        if (faceColorData.Count != 6)
+        {
+            Debug.LogError($"❌ [CubeCaptureController] Expected 6 faces, but only {faceColorData.Count} were successfully processed");
+            return;
+        }
 
-            Debug.Log("📱 [CubeCaptureController] Initial contour extraction finished for all faces");
+        // ─── PHASE 2: COLOR CLASSIFICATION ───────────────────────
+        Debug.Log("🎨 [CubeCaptureController] Starting color classification using stored data...");
+        
+        try
+        {
+            // Convert stored face color data to ordered list for classifier (U, R, F, D, L, B)
+            var orderedFaceData = new List<List<Vector3>>();
+            foreach (string faceId in faceKeys)
+            {
+                if (faceColorData.ContainsKey(faceId) && faceColorData[faceId].Count == 9)
+                {
+                    orderedFaceData.Add(faceColorData[faceId]);
+                    
+                    // Log face data for validation
+                    var colors = faceColorData[faceId];
+                    float avgL = colors.Average(c => c.x);
+                    float avgA = colors.Average(c => c.y);
+                    float avgB = colors.Average(c => c.z);
+                    Debug.Log($"📊 [CubeCaptureController] Face {faceId}: 9 stickers, avg LAB({avgL:F1}, {avgA:F1}, {avgB:F1})");
+                }
+                else
+                {
+                    Debug.LogError($"❌ [CubeCaptureController] Face {faceId} missing or incomplete in stored data!");
+                    return; // Cannot classify without complete data
+                }
+            }
+            
+            // Final summary using stored data
+            int totalStickers = faceColorData.Values.Sum(face => face.Count);
+            Debug.Log($"🎉 [CubeCaptureController] FINAL SUMMARY (from stored data):");
+            Debug.Log($"   📊 Total faces processed: {faceColorData.Count}/6");
+            Debug.Log($"   ✅ All faces successful (9 stickers each)");
+            Debug.Log($"   🎨 Total stickers: {totalStickers}/54");
+            
+            // Perform classification
+            var classifier = new CubeClassifier();
+            string cubeString = classifier.Classify(orderedFaceData);
+            
+            // ─── CLASSIFICATION RESULTS ───────────────────────
+            Debug.Log($"🎯 [CubeCaptureController] ✅ CLASSIFICATION COMPLETE!");
+            Debug.Log($"📋 [CubeCaptureController] Cube String: {cubeString}");
+            Debug.Log($"📏 [CubeCaptureController] Length: {cubeString.Length}/54 characters");
+            
+            // Display per-face classification
+            for (int i = 0; i < 6; i++)
+            {
+                string faceId = faceKeys[i];
+                string faceClassification = cubeString.Substring(i * 9, 9);
+                Debug.Log($"   {faceId} face: {faceClassification}");
+            }
+            
+            // Validate result
+            if (cubeString.Length == 54)
+            {
+                Debug.Log("🏆 [CubeCaptureController] SUCCESS: Ready for cube solving!");
+                
+                // ─── PHASE 3: KOCIEMBA SOLVER ───────────────────────
+                SolveCubeWithKociemba(cubeString);
+            }
+            else
+            {
+                Debug.LogError($"❌ [CubeCaptureController] Classification failed: Invalid length {cubeString.Length}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"❌ [CubeCaptureController] Classification error: {ex.Message}");
         }
 
     }
