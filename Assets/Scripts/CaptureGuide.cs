@@ -1,9 +1,14 @@
+using System;
 using UnityEngine;
-using TMPro;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
+using TMPro;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+using OpenCVForUnity.UnityIntegration;
 
 public class CaptureGuide : MonoBehaviour
 {
@@ -11,92 +16,157 @@ public class CaptureGuide : MonoBehaviour
     public ARCameraManager arCameraManager;
     public TextMeshProUGUI hintText;
 
-    [Header("Settings")]
-    public float blurThreshold = 50f;
-    public float maxTiltDegrees = 10f;
+    [Header("Performance Settings")]
+    public int frameSkipCount = 2; // Process every 3rd frame
+    public int analysisWidth = 320; // Smaller resolution for real-time analysis
+    public int analysisHeight = 240;
+
+    private CubeProcessor realTimeProcessor;
+    private int frameCounter = 0;
+    private float lastProcessTime = 0f;
+    private bool isProcessing = false;
 
     void Start()
     {
-        Input.gyro.enabled = true;
+        // Initialize processor with dummy path (we'll provide Mat directly)
+        realTimeProcessor = new CubeProcessor("");
+        
+        if (hintText != null)
+            hintText.text = "Point camera at cube";
     }
 
     void Update()
     {
-        if (arCameraManager == null || hintText == null)
+        if (arCameraManager == null || hintText == null || isProcessing)
             return;
 
-        string message = "";
+        // Frame rate limiting - process every Nth frame
+        frameCounter++;
+        if (frameCounter < frameSkipCount)
+            return;
+        
+        frameCounter = 0;
 
-        if (IsTilted())
-        {
-            message = "Tilt phone";
-        }
-        else if (!TryCheckSharpness(out float sharpness))
-        {
-            message = ""; // can't read frame
-        }
-        else if (sharpness < blurThreshold)
-        {
-            message = "Too blurry";
-        }
-        else
-        {
-            message = "Align edges";
-        }
+        // Time-based limiting - don't process more than 10 times per second
+        if (Time.time - lastProcessTime < 0.1f)
+            return;
 
-        hintText.text = message;
+        ProcessCurrentFrame();
     }
 
-    bool IsTilted()
+    unsafe void ProcessCurrentFrame()
     {
-        var r = Input.gyro.attitude.eulerAngles;
-        float pitch = Mathf.DeltaAngle(r.x, 0);
-        float roll = Mathf.DeltaAngle(r.z, 0);
-        return Mathf.Abs(pitch) > maxTiltDegrees || Mathf.Abs(roll) > maxTiltDegrees;
-    }
-
-    unsafe bool TryCheckSharpness(out float sharpness)
-    {
-        sharpness = 0;
-
         if (!arCameraManager.TryAcquireLatestCpuImage(out XRCpuImage cpuImage))
-            return false;
-
-        using (cpuImage)
         {
-            var conversionParams = new XRCpuImage.ConversionParams
+            hintText.text = "Camera not ready";
+            return;
+        }
+
+        isProcessing = true;
+        lastProcessTime = Time.time;
+
+        try
+        {
+            using (cpuImage)
             {
-                inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
-                outputDimensions = new Vector2Int(64, 64),
-                outputFormat = TextureFormat.RGBA32,
-                transformation = XRCpuImage.Transformation.None
-            };
+                // Convert AR image to texture with smaller resolution for performance
+                var conversionParams = new XRCpuImage.ConversionParams
+                {
+                    inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
+                    outputDimensions = new Vector2Int(analysisWidth, analysisHeight),
+                    outputFormat = TextureFormat.RGBA32,
+                    transformation = XRCpuImage.Transformation.MirrorX
+                };
 
-            int size = conversionParams.outputDimensions.x * conversionParams.outputDimensions.y * 4;
-            var data = new NativeArray<byte>(size, Allocator.Temp);
+                int size = conversionParams.outputDimensions.x * conversionParams.outputDimensions.y * 4;
+                var data = new NativeArray<byte>(size, Allocator.Temp);
+                cpuImage.Convert(conversionParams, (System.IntPtr)data.GetUnsafePtr(), size);
 
-            cpuImage.Convert(conversionParams, (System.IntPtr)data.GetUnsafePtr(), size);
+                // Create texture and convert to Mat
+                Texture2D frameTexture = new Texture2D(analysisWidth, analysisHeight, TextureFormat.RGBA32, false);
+                frameTexture.LoadRawTextureData(data);
+                frameTexture.Apply();
+                data.Dispose();
 
-            float sum = 0f, sumSq = 0f;
-            int pixelCount = size / 4;
+                // Convert to OpenCV Mat
+                Mat frameMat = ConvertTextureToMat(frameTexture);
+                
+                // Clean up texture immediately
+                DestroyImmediate(frameTexture);
 
-            for (int i = 0; i < size; i += 4)
-            {
-                float r = data[i] / 255f;
-                float g = data[i + 1] / 255f;
-                float b = data[i + 2] / 255f;
-                float luma = 0.299f * r + 0.587f * g + 0.114f * b;
-
-                sum += luma;
-                sumSq += luma * luma;
+                if (frameMat != null)
+                {
+                    // Use CubeProcessor's simplified counting method
+                    int contourCount = realTimeProcessor.ProcessImageForCounting(frameMat);
+                    
+                    // Update UI based on results
+                    UpdateFeedback(contourCount);
+                    
+                    // Clean up Mat
+                    frameMat.Dispose();
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[CaptureGuide] Frame processing error: {ex.Message}");
+            hintText.text = "Processing...";
+        }
+        finally
+        {
+            isProcessing = false;
+        }
+    }
 
-            float mean = sum / pixelCount;
-            float variance = (sumSq / pixelCount) - (mean * mean);
-            sharpness = variance * 1000f;
+    private Mat ConvertTextureToMat(Texture2D texture)
+    {
+        try
+        {
+            // Convert Unity texture to OpenCV Mat
+            Mat mat = new Mat(texture.height, texture.width, CvType.CV_8UC4);
+            OpenCVMatUtils.Texture2DToMat(texture, mat);
+            
+            // Convert RGBA to BGR for processing
+            Mat bgrMat = new Mat();
+            Imgproc.cvtColor(mat, bgrMat, Imgproc.COLOR_RGBA2BGR);
+            mat.Dispose();
+            
+            return bgrMat;
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[CaptureGuide] Mat conversion error: {ex.Message}");
+            return null;
+        }
+    }
 
-            data.Dispose();
-            return true;
+    private void UpdateFeedback(int contourCount)
+    {
+        if (hintText == null) return;
+
+        switch (contourCount)
+        {
+            case 9:
+                hintText.text = "✓ 9 stickers detected";
+                hintText.color = Color.green;
+                break;
+            case 0:
+                hintText.text = "No stickers detected";
+                hintText.color = Color.red;
+                break;
+            default:
+                hintText.text = $"{contourCount} stickers detected";
+                hintText.color = Color.yellow;
+                break;
+        }
+    }
+
+    void OnDestroy()
+    {
+        // Clean up processor
+        if (realTimeProcessor?.Resized != null)
+        {
+            realTimeProcessor.Resized.Dispose();
         }
     }
 }

@@ -47,6 +47,7 @@ public class CubeCaptureController : MonoBehaviour
     public TextMeshProUGUI toggleButtonText;
 
     private readonly string[] faceKeys = { "U", "R", "F", "D", "L", "B" };
+    private readonly string[] descriptiveFaceKeys = { "Top", "Right", "Front", "Bottom", "Left", "Back" };
     private int currentFaceIndex = 0;
     private Texture2D capturedTexture;
     private Texture2D fullImageForProcessing; // Store full image separately
@@ -82,7 +83,7 @@ public class CubeCaptureController : MonoBehaviour
     void UpdateHint()
     {
         if (currentFaceIndex < faceKeys.Length)
-            hintText.text = $"Show face: {faceKeys[currentFaceIndex]}";
+            hintText.text = $"Show {descriptiveFaceKeys[currentFaceIndex]} Face";
         else
             hintText.text = "All faces captured.";
     }

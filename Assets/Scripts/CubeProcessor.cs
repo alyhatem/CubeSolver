@@ -86,7 +86,7 @@ public class CubeProcessor
         Imgproc.findContours(dilated, contours, hierarchy,
                              Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_SIMPLE);
 
-        Debug.Log($"[DetectSquares] Found {contours.Count} total contours");
+        // Debug.Log($"[DetectSquares] Found {contours.Count} total contours");
 
         int candidateCount = 0;
         foreach (MatOfPoint c in contours)
@@ -105,11 +105,11 @@ public class CubeProcessor
             double area = w * h;
 
             // Log first few candidates for debugging
-            if (candidateCount < 5)
-            {
-                Debug.Log($"  Candidate {candidateCount}: w={w:F1}, h={h:F1}, aspect={aspect:F2}, area={area:F0} -> " + 
-                         (aspect > 0.8 && aspect < 1.2 && area > 1000 && area < 10000 ? "ACCEPT" : "REJECT"));
-            }
+            // if (candidateCount < 5)
+            // {
+            //     Debug.Log($"  Candidate {candidateCount}: w={w:F1}, h={h:F1}, aspect={aspect:F2}, area={area:F0} -> " + 
+            //              (aspect > 0.8 && aspect < 1.2 && area > 1000 && area < 10000 ? "ACCEPT" : "REJECT"));
+            // }
             candidateCount++;
 
             // Use original detected contour instead of artificial rectangle
@@ -119,7 +119,7 @@ public class CubeProcessor
                 RejectedContours.Add(c);
         }
 
-        Debug.Log($"[DetectSquares] Valid squares: {SquareContours.Count}, Rejected: {RejectedContours.Count}");
+        // Debug.Log($"[DetectSquares] Valid squares: {SquareContours.Count}, Rejected: {RejectedContours.Count}");
         
         if (SquareContours.Count == 0)
             throw new Exception($"No valid contours detected in {ImagePath}");
@@ -172,7 +172,7 @@ public class CubeProcessor
         // Store boundary for recovery algorithm
         Boundary = new Vector4((float)minX, (float)minY, (float)maxX, (float)maxY);
         
-        Debug.Log($"[PruneToCubeBoundary] Kept {SquareContours.Count} contours within boundary ({minX:F1},{minY:F1}) to ({maxX:F1},{maxY:F1})");
+        // Debug.Log($"[PruneToCubeBoundary] Kept {SquareContours.Count} contours within boundary ({minX:F1},{minY:F1}) to ({maxX:F1},{maxY:F1})");
     }
 
     /* ---------- step 3b: select up-to 9 and sort row-major ---------- */
@@ -218,17 +218,17 @@ public class CubeProcessor
             SortedContours.AddRange(row.Select(p => p.contour));
         }
             
-        Debug.Log($"[SelectAndSortContours] Selected {SortedContours.Count} contours from {SquareContours.Count} candidates");
+        // Debug.Log($"[SelectAndSortContours] Selected {SortedContours.Count} contours from {SquareContours.Count} candidates");
         
         // Log grid positions for debugging (showing 3x3 layout)
-        Debug.Log("[SelectAndSortContours] 3x3 Grid Layout:");
+        // Debug.Log("[SelectAndSortContours] 3x3 Grid Layout:");
         for (int i = 0; i < SortedContours.Count; i++)
         {
             Point center = ContourCenter(SortedContours[i]);
             int row = i / 3;
             int col = i % 3;
             string gridPos = row == 1 && col == 1 ? " ← CENTER" : "";
-            Debug.Log($"  Grid[{i}] Row:{row} Col:{col}: ({center.x:F1}, {center.y:F1}){gridPos}");
+            // Debug.Log($"  Grid[{i}] Row:{row} Col:{col}: ({center.x:F1}, {center.y:F1}){gridPos}");
         }
     }
 
@@ -253,11 +253,11 @@ public class CubeProcessor
     {
         if (SortedContours.Count >= 9)
         {
-            Debug.Log("[RecoverMissingContours] Already have 9 contours, skipping recovery");
+            // Debug.Log("[RecoverMissingContours] Already have 9 contours, skipping recovery");
             return;
         }
         
-        Debug.Log($"[RecoverMissingContours] Starting with {SortedContours.Count} contours, attempting recovery...");
+        // Debug.Log($"[RecoverMissingContours] Starting with {SortedContours.Count} contours, attempting recovery...");
 
         var acceptedCenters = SortedContours.Select(ContourCenter).ToArray();
         if (acceptedCenters.Length < 4)
@@ -337,7 +337,7 @@ public class CubeProcessor
             }
         }
 
-        Debug.Log($"[RecoverMissingContours] Found {missingSlots.Count} missing slots, added {added.Count} recovered contours");
+        // Debug.Log($"[RecoverMissingContours] Found {missingSlots.Count} missing slots, added {added.Count} recovered contours");
         
         // Re-sort the complete list in row-major order
         if (added.Any())
@@ -357,7 +357,7 @@ public class CubeProcessor
                     SortedContours.Add(item.contour);
             }
             
-            Debug.Log($"[RecoverMissingContours] Re-sorted grid with {SortedContours.Count} total contours");
+            // Debug.Log($"[RecoverMissingContours] Re-sorted grid with {SortedContours.Count} total contours");
         }
     }
 
@@ -482,6 +482,77 @@ public class CubeProcessor
         }
         
         return MeanLabValues;
+    }
+    
+    /* ---------- real-time processing methods ---------- */
+    
+    /// Preprocesses the existing Resized Mat (instead of reading from file)
+    private Mat PreprocessResizedMat()
+    {
+        if (Resized == null || Resized.empty())
+            throw new Exception("Resized Mat is null or empty - set it before calling PreprocessResizedMat()");
+
+        Mat gray = new Mat();
+        Imgproc.cvtColor(Resized, gray, Imgproc.COLOR_BGR2GRAY);
+
+        Mat blurred = new Mat();
+        Imgproc.GaussianBlur(gray, blurred, new Size(7, 7), 0);
+
+        Mat edges = new Mat();
+        Imgproc.Canny(blurred, edges, 30, 60);
+
+        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
+        Mat dilated = new Mat();
+        Imgproc.dilate(edges, dilated, kernel, new Point(-1, -1), 4);
+
+        // Clean up intermediate mats
+        gray.Dispose();
+        blurred.Dispose();
+        edges.Dispose();
+        kernel.Dispose();
+
+        return dilated;   // caller disposes
+    }
+    
+    /// Process a live camera frame for contour counting (skips color extraction)
+    public int ProcessImageForCounting(Mat inputMat)
+    {
+        // Set up input Mat - resize to expected dimensions if needed
+        if (Resized != null) Resized.Dispose();
+        
+        // Resize input to standard processing size (480x640)
+        Resized = new Mat();
+        Imgproc.resize(inputMat, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
+        
+        // Apply preprocessing
+        Mat dilated = PreprocessResizedMat();
+        
+        // Clear previous results
+        SquareContours.Clear();
+        RejectedContours.Clear();
+        SortedContours.Clear();
+        RecoveredContours.Clear();
+        
+        try
+        {
+            // Run detection pipeline (skip color extraction for performance)
+            DetectSquares(dilated);
+            PruneToCubeBoundary();
+            SelectAndSortContours();
+            RecoverMissingContours();
+            
+            return SortedContours.Count;
+        }
+        catch (Exception ex)
+        {
+            // For real-time processing, don't throw exceptions - just return 0
+            Debug.LogWarning($"[ProcessImageForCounting] Processing error: {ex.Message}");
+            return 0;
+        }
+        finally
+        {
+            dilated.Dispose();
+        }
     }
     
 }
