@@ -52,31 +52,92 @@ public class CubeClassifier
             for (int stickerIdx = 0; stickerIdx < 9; stickerIdx++)
             {
                 Vector3 lab = stickersLab[faceIdx][stickerIdx];
+                string assignedLetter;
                 
-                // Compute CIEDE2000 distances to all centers
-                var distances = new List<float>();
-                foreach (var center in centers)
+                // FORCE CENTER STICKERS (index 4) to their own face key
+                if (stickerIdx == 4)
                 {
-                    float distance = CIEDE2000(lab, center);
-                    distances.Add(distance);
+                    assignedLetter = FaceLetters[faceIdx];
+                    Debug.Log($"[CubeClassifier] ✅ CENTER Face{faceIdx}[{stickerIdx}] LAB({lab.x:F1},{lab.y:F1},{lab.z:F1}) → {assignedLetter} (FORCED)");
                 }
+                else
+                {
+                    // Compute CIEDE2000 distances to all centers for non-center stickers
+                    var distances = new List<float>();
+                    foreach (var center in centers)
+                    {
+                        float distance = CIEDE2000(lab, center);
+                        distances.Add(distance);
+                    }
 
-                // Find nearest center
-                int nearestFaceIdx = FindMinIndex(distances);
-                string assignedLetter = FaceLetters[nearestFaceIdx];
-                result.Add(assignedLetter);
-                
-                // Debug logging for first few stickers
-                if (debugSampleCount < 5)
-                {
-                    Debug.Log($"[CubeClassifier] Sticker Face{faceIdx}[{stickerIdx}] LAB({lab.x:F1},{lab.y:F1},{lab.z:F1}) → {assignedLetter} (distances: {string.Join(",", distances.Select(d => d.ToString("F1")))})");
-                    debugSampleCount++;
+                    // Find nearest center
+                    int nearestFaceIdx = FindMinIndex(distances);
+                    assignedLetter = FaceLetters[nearestFaceIdx];
+                    
+                    // Debug logging for first few non-center stickers
+                    if (debugSampleCount < 10)
+                    {
+                        Debug.Log($"[CubeClassifier] Sticker Face{faceIdx}[{stickerIdx}] LAB({lab.x:F1},{lab.y:F1},{lab.z:F1}) → {assignedLetter} (distances: {string.Join(",", distances.Select(d => d.ToString("F1")))})");
+                        debugSampleCount++;
+                    }
                 }
+                
+                result.Add(assignedLetter);
             }
         }
 
         string cubeString = string.Join("", result);
         Debug.Log($"[CubeClassifier] ✅ Classification complete: {cubeString.Length} characters");
+        
+        // ─── CLASSIFICATION RESULT VALIDATION ─────────────────────────
+        Debug.Log("[CubeClassifier] 🔍 Validating classification results...");
+        
+        // Count each face key in the result
+        var faceCounts = new Dictionary<string, int>();
+        foreach (string letter in FaceLetters)
+            faceCounts[letter] = 0;
+            
+        foreach (string letter in result)
+        {
+            if (faceCounts.ContainsKey(letter))
+                faceCounts[letter]++;
+        }
+        
+        // Log face distribution
+        Debug.Log("[CubeClassifier] Face distribution:");
+        bool hasErrors = false;
+        foreach (string face in FaceLetters)
+        {
+            int count = faceCounts[face];
+            string status = count == 9 ? "✅" : "❌";
+            if (count != 9) hasErrors = true;
+            
+            Debug.Log($"  {status} {face}: {count}/9 stickers");
+        }
+        
+        // Log center sticker validation specifically
+        Debug.Log("[CubeClassifier] Center sticker validation:");
+        for (int faceIdx = 0; faceIdx < 6; faceIdx++)
+        {
+            int centerIndex = faceIdx * 9 + 4;  // Center sticker index in cube string
+            char centerLetter = cubeString[centerIndex];
+            char expectedLetter = FaceLetters[faceIdx][0];
+            
+            string status = centerLetter == expectedLetter ? "✅" : "❌";
+            Debug.Log($"  {status} Face {faceIdx} ({FaceLetters[faceIdx]}) center: '{centerLetter}' (expected '{expectedLetter}')");
+        }
+        
+        // Final validation summary
+        if (hasErrors)
+        {
+            Debug.LogError("[CubeClassifier] ❌ Classification FAILED - incorrect face distribution");
+            Debug.LogError("  This indicates center sticker forcing or CIEDE2000 calculation issues");
+        }
+        else
+        {
+            Debug.Log("[CubeClassifier] ✅ Classification PASSED - all faces have exactly 9 stickers");
+        }
+        
         return cubeString;
     }
 

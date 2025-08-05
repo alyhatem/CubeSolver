@@ -16,6 +16,7 @@ using OpenCVForUnity.UnityUtils;
 using OpenCVForUnity.UnityIntegration;
 using UnityEngine.Rendering.UI;   // add at top of the file for matToTexture2D
 using Kociemba;                   // Kociemba solver integration
+using UnityEngine.SceneManagement;         // Scene management for solver transition
 
 
 
@@ -366,17 +367,32 @@ public class CubeCaptureController : MonoBehaviour
                 Debug.Log($"   {faceId} face: {faceClassification}");
             }
             
-            // Validate result
-            if (cubeString.Length == 54)
+            // Validate result length first
+            if (cubeString.Length != 54)
             {
-                Debug.Log("🏆 [CubeCaptureController] SUCCESS: Ready for cube solving!");
+                Debug.LogError($"❌ [CubeCaptureController] Classification failed: Invalid length {cubeString.Length}");
+                return;
+            }
+            
+            // ─── PHASE 3: CUBE STRING VALIDATION ───────────────────────
+            Debug.Log("🔍 [CubeCaptureController] Validating cube string before solving...");
+            
+            if (ValidateCubeString(cubeString))
+            {
+                Debug.Log("🏆 [CubeCaptureController] SUCCESS: Cube string validated - ready for solving!");
                 
-                // ─── PHASE 3: KOCIEMBA SOLVER ───────────────────────
+                // ─── PHASE 4: KOCIEMBA SOLVER ───────────────────────
                 SolveCubeWithKociemba(cubeString);
             }
             else
             {
-                Debug.LogError($"❌ [CubeCaptureController] Classification failed: Invalid length {cubeString.Length}");
+                Debug.LogError("❌ [CubeCaptureController] Cube string validation FAILED - invalid face distribution");
+                Debug.LogError("   This indicates a classification error or incomplete cube capture");
+                Debug.LogError("   Recommendation: Restart capture process and ensure good lighting/cube visibility");
+                
+                // Show error and restart option (TODO: implement UI)
+                // For now, automatically restart the process
+                RestartCaptureProcess();
             }
         }
         catch (Exception ex)
@@ -384,6 +400,142 @@ public class CubeCaptureController : MonoBehaviour
             Debug.LogError($"❌ [CubeCaptureController] Classification error: {ex.Message}");
         }
 
+    }
+    
+    private bool ValidateCubeString(string cubeString)
+    {
+        if (string.IsNullOrEmpty(cubeString) || cubeString.Length != 54)
+        {
+            Debug.LogError($"❌ [CubeCaptureController] Invalid cube string length: {cubeString?.Length ?? 0}/54");
+            return false;
+        }
+        
+        // Count each face key in the cube string
+        var faceCounts = new Dictionary<char, int>();
+        foreach (char c in cubeString)
+        {
+            if (faceCounts.ContainsKey(c))
+                faceCounts[c]++;
+            else
+                faceCounts[c] = 1;
+        }
+        
+        // Check for exactly 9 of each expected face key
+        char[] expectedFaces = { 'U', 'R', 'F', 'D', 'L', 'B' };
+        bool isValid = true;
+        
+        Debug.Log("🔍 [CubeCaptureController] Cube string validation:");
+        foreach (char face in expectedFaces)
+        {
+            int count = faceCounts.ContainsKey(face) ? faceCounts[face] : 0;
+            string status = count == 9 ? "✅" : "❌";
+            Debug.Log($"   {status} {face}: {count}/9 stickers");
+            
+            if (count != 9)
+                isValid = false;
+        }
+        
+        // Check for unexpected characters
+        foreach (var kv in faceCounts)
+        {
+            if (!expectedFaces.Contains(kv.Key))
+            {
+                Debug.LogError($"❌ [CubeCaptureController] Unexpected character in cube string: '{kv.Key}' ({kv.Value} times)");
+                isValid = false;
+            }
+        }
+        
+        if (isValid)
+        {
+            Debug.Log("✅ [CubeCaptureController] Cube string validation PASSED - exactly 9 of each face");
+        }
+        else
+        {
+            Debug.LogError("❌ [CubeCaptureController] Cube string validation FAILED - invalid face distribution");
+        }
+        
+        return isValid;
+    }
+    
+    private void RestartCaptureProcess()
+    {
+        Debug.Log("🔄 [CubeCaptureController] Restarting capture process - clearing all data...");
+        
+        // Reset capture state
+        currentFaceIndex = 0;
+        
+        // Clear all stored data
+        faceColorData.Clear();
+        
+        // Clean up debug data and dispose OpenCV Mats
+        ClearDebugData();
+        
+        // Delete all saved face images from persistent storage
+        DeleteAllSavedFaces();
+        
+        // Clean up any lingering textures
+        CleanupTextures();
+        
+        // Reset UI to initial capture state
+        UpdateHint();
+        ShowCaptureUI();
+        
+        Debug.Log("✅ [CubeCaptureController] Capture process restarted - ready for Face 1");
+    }
+    
+    private void ClearDebugData()
+    {
+        // Dispose OpenCV Mats to prevent memory leaks
+        foreach (var mat in faceImages.Values)
+            mat?.Dispose();
+        
+        // Clear all debug data dictionaries
+        faceImages.Clear();
+        faceSortedContours.Clear();
+        faceRejectedContours.Clear();
+        faceRecoveredContours.Clear();
+        
+        Debug.Log("🗑️ [CubeCaptureController] Debug data cleared and Mats disposed");
+    }
+    
+    private void DeleteAllSavedFaces()
+    {
+        int deletedCount = 0;
+        foreach (string faceKey in faceKeys)
+        {
+            string path = Path.Combine(Application.persistentDataPath, $"face_{faceKey}.jpg");
+            if (File.Exists(path))
+            {
+                try
+                {
+                    File.Delete(path);
+                    deletedCount++;
+                    Debug.Log($"🗑️ [CubeCaptureController] Deleted saved image: {path}");
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"⚠️ [CubeCaptureController] Could not delete file {path}: {ex.Message}");
+                }
+            }
+        }
+        Debug.Log($"🗑️ [CubeCaptureController] Deleted {deletedCount} saved face images");
+    }
+    
+    private void CleanupTextures()
+    {
+        if (capturedTexture != null)
+        {
+            Destroy(capturedTexture);
+            capturedTexture = null;
+        }
+        
+        if (fullImageForProcessing != null)
+        {
+            Destroy(fullImageForProcessing);
+            fullImageForProcessing = null;
+        }
+        
+        Debug.Log("🗑️ [CubeCaptureController] Textures cleaned up");
     }
 
     void OnRetakePressed()
@@ -518,6 +670,10 @@ public class CubeCaptureController : MonoBehaviour
                 {
                     Debug.Log($"   Complete: {solution.Trim()}");
                 }
+                
+                // ─── TRANSITION TO SOLVER UI ───────────────────────
+                Debug.Log("🎬 [CubeCaptureController] Transitioning to solver UI...");
+                TransitionToSolverScene(solution);
             }
         }
         catch (System.Exception ex)
@@ -538,5 +694,25 @@ public class CubeCaptureController : MonoBehaviour
         
         string[] moves = cleanSolution.Split(new char[] { ' ' }, System.StringSplitOptions.RemoveEmptyEntries);
         return moves.Length;
+    }
+    
+    private void TransitionToSolverScene(string solution)
+    {
+        try
+        {
+            // Store solution in static variable for solver scene
+            CubeSolverController.SolutionString = solution;
+            
+            Debug.Log($"[CubeCaptureController] Solution stored: '{solution}'");
+            Debug.Log("[CubeCaptureController] Loading CubeSolve scene...");
+            
+            // Load the solver scene
+            SceneManager.LoadScene("CubeSolve");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"❌ [CubeCaptureController] Failed to transition to solver scene: {ex.Message}");
+            Debug.LogError("   Make sure 'CubeSolve' scene exists and is added to Build Settings");
+        }
     }
 }

@@ -51,7 +51,7 @@ public class CaptureGuide : MonoBehaviour
         if (Time.time - lastProcessTime < 0.1f)
             return;
 
-        ProcessCurrentFrame();
+        // ProcessCurrentFrame();
     }
 
     unsafe void ProcessCurrentFrame()

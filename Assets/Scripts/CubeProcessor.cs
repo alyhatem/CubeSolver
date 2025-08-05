@@ -412,17 +412,43 @@ public class CubeProcessor
                     // Validate LAB values are reasonable
                     bool isValidLab = L_true >= 0 && L_true <= 100 && 
                                      A_true >= -128 && A_true <= 127 && 
-                                     B_true >= -128 && B_true <= 127;
+                                     B_true >= -128 && B_true <= 127 &&
+                                     !float.IsNaN(L_true) && !float.IsNaN(A_true) && !float.IsNaN(B_true) &&
+                                     !float.IsInfinity(L_true) && !float.IsInfinity(A_true) && !float.IsInfinity(B_true);
                     
                     if (!isValidLab)
                     {
                         Debug.LogError($"[ComputeColors] Sticker {stickerIndex}: Invalid LAB values - L:{L_true:F1} A:{A_true:F1} B:{B_true:F1}");
                     }
                     
+                    // SPECIAL VALIDATION FOR CENTER STICKERS (index 4)
+                    bool isCenterSticker = (stickerIndex == 4);
+                    if (isCenterSticker)
+                    {
+                        Debug.Log($"[ComputeColors] 🎯 CENTER STICKER {stickerIndex}: LAB({L_true:F1}, {A_true:F1}, {B_true:F1}), Area:{maskArea}px");
+                        
+                        if (!isValidLab)
+                        {
+                            Debug.LogError($"[ComputeColors] ❌ CRITICAL: Center sticker has invalid LAB values! This will break classification.");
+                        }
+                        
+                        // Check for extremely suspicious center values
+                        if (maskArea < 500)
+                        {
+                            Debug.LogWarning($"[ComputeColors] ⚠️  CENTER WARNING: Very small mask area ({maskArea}px) - possible contour detection error");
+                        }
+                        
+                        if (L_true < 5 || L_true > 95)
+                        {
+                            Debug.LogWarning($"[ComputeColors] ⚠️  CENTER WARNING: Extreme lightness L={L_true:F1} - check for shadows/highlights");
+                        }
+                    }
+                    
                     // Check for suspicious pure white/neutral values
                     if (L_true > 99 && Math.Abs(A_true) < 1 && Math.Abs(B_true) < 1)
                     {
-                        Debug.LogWarning($"[ComputeColors] Sticker {stickerIndex}: Suspicious pure white/neutral LAB({L_true:F1}, {A_true:F1}, {B_true:F1}) - check mask validity");
+                        string centerWarning = isCenterSticker ? " ⚠️  CENTER AFFECTED!" : "";
+                        Debug.LogWarning($"[ComputeColors] Sticker {stickerIndex}: Suspicious pure white/neutral LAB({L_true:F1}, {A_true:F1}, {B_true:F1}){centerWarning}");
                     }
                     
                     Debug.Log($"[ComputeColors] Sticker {stickerIndex}: LAB({L_true:F1}, {A_true:F1}, {B_true:F1}), BGR({meanBgr.val[0]:F1}, {meanBgr.val[1]:F1}, {meanBgr.val[2]:F1}), Area:{maskArea}px");
