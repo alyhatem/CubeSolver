@@ -139,7 +139,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!224 &57658596
 RectTransform:
   m_ObjectHideFlags: 0
@@ -1536,27 +1536,27 @@ PrefabInstance:
     - target: {fileID: 3087842400878109164, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}
       propertyPath: m_fontSize
-      value: 20
+      value: 72
       objectReference: {fileID: 0}
     - target: {fileID: 3087842400878109164, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}
       propertyPath: m_margin.w
-      value: 5
+      value: 20
       objectReference: {fileID: 0}
     - target: {fileID: 3087842400878109164, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}
       propertyPath: m_margin.x
-      value: 10
+      value: 20
       objectReference: {fileID: 0}
     - target: {fileID: 3087842400878109164, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}
       propertyPath: m_margin.y
-      value: 5
+      value: 20
       objectReference: {fileID: 0}
     - target: {fileID: 3087842400878109164, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}
       propertyPath: m_margin.z
-      value: 10
+      value: 20
       objectReference: {fileID: 0}
     - target: {fileID: 3087842400878109164, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}
@@ -1576,7 +1576,7 @@ PrefabInstance:
     - target: {fileID: 3087842400878109164, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}
       propertyPath: m_fontSizeMax
-      value: 20
+      value: 72
       objectReference: {fileID: 0}
     - target: {fileID: 3087842400878109164, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}
@@ -1652,12 +1652,12 @@ PrefabInstance:
     - target: {fileID: 9183529837164996295, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}
       propertyPath: m_SizeDelta.x
-      value: 250
+      value: 500
       objectReference: {fileID: 0}
     - target: {fileID: 9183529837164996295, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}
       propertyPath: m_SizeDelta.y
-      value: 45
+      value: 200
       objectReference: {fileID: 0}
     - target: {fileID: 9183529837164996295, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}
@@ -2510,7 +2510,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &1221084075
 RectTransform:
   m_ObjectHideFlags: 0
@@ -3635,12 +3635,12 @@ PrefabInstance:
     - target: {fileID: 9183529837164996295, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}
       propertyPath: m_SizeDelta.x
-      value: 200
+      value: 600
       objectReference: {fileID: 0}
     - target: {fileID: 9183529837164996295, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}
       propertyPath: m_SizeDelta.y
-      value: 55
+      value: 165
       objectReference: {fileID: 0}
     - target: {fileID: 9183529837164996295, guid: c8327531a4bd74be280e270f5a6b61e6,
         type: 3}

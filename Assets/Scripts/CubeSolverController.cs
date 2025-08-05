@@ -29,28 +29,28 @@ public class CubeSolverController : MonoBehaviour
     private readonly Dictionary<string, string> moveTranslations = new Dictionary<string, string>
     {
         // Basic clockwise moves
-        {"U", "Turn the Top face Clockwise"},
-        {"R", "Turn the Right face Clockwise"},
-        {"F", "Turn the Front face Clockwise"},
-        {"D", "Turn the Bottom face Clockwise"},
-        {"L", "Turn the Left face Clockwise"},
-        {"B", "Turn the Back face Clockwise"},
+        {"U", "Turn Top face Clockwise"},
+        {"R", "Turn Right face Clockwise"},
+        {"F", "Turn Front face Clockwise"},
+        {"D", "Turn Bottom face Clockwise"},
+        {"L", "Turn Left face Clockwise"},
+        {"B", "Turn Back face Clockwise"},
         
         // Prime (anti-clockwise) moves
-        {"U'", "Turn the Top face Anti-Clockwise"},
-        {"R'", "Turn the Right face Anti-Clockwise"},
-        {"F'", "Turn the Front face Anti-Clockwise"},
-        {"D'", "Turn the Bottom face Anti-Clockwise"},
-        {"L'", "Turn the Left face Anti-Clockwise"},
-        {"B'", "Turn the Back face Anti-Clockwise"},
+        {"U'", "Turn Top face Anti-Clockwise"},
+        {"R'", "Turn Right face Anti-Clockwise"},
+        {"F'", "Turn Front face Anti-Clockwise"},
+        {"D'", "Turn Bottom face Anti-Clockwise"},
+        {"L'", "Turn Left face Anti-Clockwise"},
+        {"B'", "Turn Back face Anti-Clockwise"},
         
         // Double moves
-        {"U2", "Turn the Top face Twice"},
-        {"R2", "Turn the Right face Twice"},
-        {"F2", "Turn the Front face Twice"},
-        {"D2", "Turn the Bottom face Twice"},
-        {"L2", "Turn the Left face Twice"},
-        {"B2", "Turn the Back face Twice"}
+        {"U2", "Turn Top face Twice"},
+        {"R2", "Turn Right face Twice"},
+        {"F2", "Turn Front face Twice"},
+        {"D2", "Turn Bottom face Twice"},
+        {"L2", "Turn Left face Twice"},
+        {"B2", "Turn Back face Twice"}
     };
 
     void Start()
@@ -111,7 +111,7 @@ public class CubeSolverController : MonoBehaviour
         }
         else
         {
-            instructionText.text = "🎉 Congratulations! Your cube is solved!";
+            instructionText.text = "Congratulations! Your cube is solved!";
             Debug.Log("[CubeSolverController] Solution complete!");
         }
         

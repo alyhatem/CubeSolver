@@ -281,17 +281,22 @@ public class CubeCaptureController : MonoBehaviour
             {
                 // FAILURE: Less than 9 stickers - show review panel
                 Debug.Log($"⚠️ [CubeCaptureController] Face {faceKey}: Only {labColors.Count} stickers detected - showing review panel");
-                ShowReviewUI();
+                // ShowReviewUI();
+
+                // Brief failure feedback
+                StartCoroutine(ShowFailureFeedback($"Only {labColors.Count} stickers detected. Retake"));
                 
                 // Update hint text with specific feedback
-                retakeGuideText.text = $"Only {labColors.Count} stickers detected";
+                // retakeGuideText.text = $"Only {labColors.Count} stickers detected";
             }
         }
         catch (Exception ex)
         {
             Debug.LogError($"❌ [CubeCaptureController] Processing error for face {faceKey}: {ex.Message}");
-            ShowReviewUI();
-            retakeGuideText.text = "Processing Failed";
+            // ShowReviewUI();
+            // Brief failure feedback
+            StartCoroutine(ShowFailureFeedback("Processing Failed"));
+            // retakeGuideText.text = "Processing Failed";
         }
     }
     
@@ -301,9 +306,23 @@ public class CubeCaptureController : MonoBehaviour
         
         captureGuideText.text = message;
         
-        yield return new WaitForSeconds(1.5f);
+        yield return new WaitForSeconds(1.0f);
         
         captureGuideText.text = originalText;
+    }
+
+    System.Collections.IEnumerator ShowFailureFeedback(string message)
+    {
+        string originalText = captureGuideText.text;
+        Color originalTextColor = captureGuideText.color;
+
+        captureGuideText.text = message;
+        captureGuideText.color = Color.red;
+
+        yield return new WaitForSeconds(1.5f);
+
+        captureGuideText.text = originalText;
+        captureGuideText.color = originalTextColor;
     }
     
     void ProcessAllStoredFaces()
