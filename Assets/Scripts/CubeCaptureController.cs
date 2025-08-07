@@ -97,24 +97,6 @@ public class CubeCaptureController : MonoBehaviour
         capturePanel.SetActive(false);
         debugPanel.SetActive(true);
     }   
-    private Texture2D RotateTexture90CW(Texture2D src)
-    {
-        int width = src.width;
-        int height = src.height;
-        Texture2D result = new Texture2D(height, width, src.format, false);
-        Color[] pixels = src.GetPixels();
-
-        for (int y = 0; y < height; y++)
-        {
-            for (int x = 0; x < width; x++)
-            {
-                result.SetPixel(y, width - x - 1, pixels[y * width + x]);
-            }
-        }
-
-        result.Apply();
-        return result;
-    }
 
     private UnityEngine.Rect GetCropRect()
     {
@@ -195,7 +177,6 @@ public class CubeCaptureController : MonoBehaviour
         }
 
         // After texture is created and .Apply() is called
-        capturedTexture = RotateTexture90CW(capturedTexture);
 
         // For processing: Use full rotated image (better for OpenCV detection)
         // For preview: Show cropped version

@@ -39,11 +39,21 @@ public class CubeProcessor : IDisposable
         return faces;    // expect Count == 6 after all captures
     }
 
+    // Parameterless constructor for reusable instances
+    public CubeProcessor()
+    {
+        ImagePath = null;
+        Image = null;
+        Resized = new Mat();
+        // Don't initialize until UpdateInputMat is called
+    }
+
     public CubeProcessor(string imagePath)
     {
         ImagePath = imagePath;
         Image = Imgcodecs.imread(ImagePath, Imgcodecs.IMREAD_COLOR);
         Resized = new Mat();
+        Core.rotate(Image, Image, Core.ROTATE_90_CLOCKWISE);
         Imgproc.resize(Image, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
         Image.Dispose();
     }
@@ -51,10 +61,36 @@ public class CubeProcessor : IDisposable
     public CubeProcessor(Mat inputMat)
     {
         ImagePath = null; // No file path for Mat-based construction
+        Core.rotate(inputMat, inputMat, Core.ROTATE_90_CLOCKWISE);
         Image = inputMat; // Store original Mat
         Resized = new Mat();
         Imgproc.resize(Image, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
         Image.Dispose();
+    }
+    
+    // Update reusable instance with new input Mat
+    public void UpdateInputMat(Mat inputMat)
+    {
+        // Clear previous state
+        ClearProcessingState();
+
+        // Set new input - don't store reference to avoid disposal issues
+        // Process directly into Resized Mat
+        Core.rotate(inputMat, inputMat, Core.ROTATE_90_CLOCKWISE);
+        
+        Imgproc.resize(inputMat, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
+        Image = null; // No reference to original
+    }
+    
+    // Clear processing state for reuse
+    private void ClearProcessingState()
+    {
+        SquareContours.Clear();
+        RejectedContours.Clear();
+        RecoveredContours.Clear();
+        SortedContours.Clear();
+        MeanLabValues.Clear();
+        Boundary = Vector4.zero;
     }
 
     /* ---------- helpers ---------- */
@@ -135,6 +171,8 @@ public class CubeProcessor : IDisposable
         
         if (SquareContours.Count == 0)
             throw new Exception($"No valid contours detected in {ImagePath ?? "input Mat"}");
+        
+        hierarchy.Dispose();
     }
     
     /* ---------- step 3a: prune to cube boundary ---------- */
@@ -494,7 +532,7 @@ public class CubeProcessor : IDisposable
     public List<Vector3> ProcessImage(bool realTime = false)
     {
         string source = ImagePath ?? "input Mat";
-        Debug.Log($"[ProcessImage] Starting processing pipeline for {source}");
+        // Debug.Log($"[ProcessImage] Starting processing pipeline for {source}");
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         
         Mat dilated = ReadAndPreprocess();
@@ -521,7 +559,7 @@ public class CubeProcessor : IDisposable
         dilated.Dispose(); // Clean up
         stopwatch.Stop();
         
-        Debug.Log($"[ProcessImage] ✅ Pipeline complete in {stopwatch.ElapsedMilliseconds}ms");
+        // Debug.Log($"[ProcessImage] ✅ Pipeline complete in {stopwatch.ElapsedMilliseconds}ms");
 
         if (realTime)
             return new List<Vector3>(); // Empty list indicates no colors

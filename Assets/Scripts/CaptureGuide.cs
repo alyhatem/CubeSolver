@@ -29,7 +29,7 @@ public class CaptureGuide : MonoBehaviour
     public bool showDebugUI = true; // Enable real-time debug display
 
     [Header("Performance Settings")]
-    public int frameSkipCount = 9; // Process every 3rd frame
+    public int frameSkipCount = 2; // Process every 3rd frame
     public int analysisWidth = 640; // Higher resolution for better contour detection
     public int analysisHeight = 480;
 
@@ -52,8 +52,15 @@ public class CaptureGuide : MonoBehaviour
     // Debug state
     private int debugFrameCounter = 0;
     private float lastDebugUpdateTime = 0f;
+    
+    // FPS tracking
+    private int fpsFrameCount = 0;
+    private float fpsLastTime = 0f;
 
     private Texture2D frameTexture;
+
+    // Reusable CubeProcessor for performance optimization
+    private CubeProcessor reusableCubeProcessor;
 
     // 3D model for single cube face (57mm standard size)
     private static readonly Point3[] FACE_3D_POINTS = {
@@ -66,32 +73,12 @@ public class CaptureGuide : MonoBehaviour
     void Start()
     {
         InitializeCameraMatrix();
+        
+        // Initialize reusable processor for performance
+        reusableCubeProcessor = new CubeProcessor();
 
         if (hintText != null)
             hintText.text = "Point camera at cube face";
-    }
-
-    private Texture2D RotateTexture90CW(Texture2D src)
-    {
-        int width = src.width;
-        int height = src.height;
-        Texture2D result = new Texture2D(height, width, src.format, false);
-        Color[] pixels = src.GetPixels();
-
-        for (int y = 0; y < height; y++)
-        {
-            for (int x = 0; x < width; x++)
-            {
-                result.SetPixel(y, width - x - 1, pixels[y * width + x]);
-            }
-        }
-
-        result.Apply();
-        
-        // Destroy the source texture to prevent memory leak
-        Destroy(src);
-        
-        return result;
     }
 
     private void InitializeCameraMatrix()
@@ -146,6 +133,16 @@ public class CaptureGuide : MonoBehaviour
 
     void Update()
     {
+        // FPS tracking for performance monitoring
+        fpsFrameCount++;
+        if (Time.time - fpsLastTime >= 1.0f)
+        {
+            float fps = fpsFrameCount / (Time.time - fpsLastTime);
+            Debug.Log($"[CaptureGuide] Overall FPS: {fps:F1}");
+            fpsFrameCount = 0;
+            fpsLastTime = Time.time;
+        }
+
         if (arCameraManager == null || hintText == null || isProcessing)
             return;
 
@@ -195,15 +192,12 @@ public class CaptureGuide : MonoBehaviour
                 frameTexture.Apply();
                 data.Dispose();
             }
-
-            frameTexture = RotateTexture90CW(frameTexture);
             
             // Use 'using' to ensure frameMat is always disposed
             using (Mat frameMat = new Mat(frameTexture.height, frameTexture.width, CvType.CV_8UC4))
             {
                 OpenCVMatUtils.Texture2DToMat(frameTexture, frameMat);
                 Destroy(frameTexture);
-                
                 TrackCube(frameMat);
             } // frameMat automatically disposed here
         }
@@ -220,19 +214,22 @@ public class CaptureGuide : MonoBehaviour
 
     private void TrackCube(Mat inputMat)
     {
-        // Use 'using' to ensure CubeProcessor is always disposed
-        using (var processor = new CubeProcessor(inputMat))
+        // Use reusable processor for performance - eliminates per-frame allocation overhead
+        var processingStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        
+        reusableCubeProcessor.UpdateInputMat(inputMat);
+        reusableCubeProcessor.ProcessImage(true);
+        
+        processingStopwatch.Stop();
+        
+        if (reusableCubeProcessor.SquareContours.Count >= 6)
         {
-            processor.ProcessImage(true);
-            if (processor.SquareContours.Count >= 6)
-            {
-                UpdateTrackingStatus($"Found {processor.SquareContours.Count} stickers", true);
-            }
-            else
-            {
-                UpdateTrackingStatus($"Found {processor.SquareContours.Count} stickers", false);
-            }
-        } // processor automatically disposed here
+            UpdateTrackingStatus($"Found {reusableCubeProcessor.SquareContours.Count} stickers ({processingStopwatch.ElapsedMilliseconds}ms)", true);
+        }
+        else
+        {
+            UpdateTrackingStatus($"Found {reusableCubeProcessor.SquareContours.Count} stickers ({processingStopwatch.ElapsedMilliseconds}ms)", false);
+        }
     }
 
     private bool EstimateFacePose(Point[] imageCorners, out Vector3 position, out Quaternion rotation)
@@ -303,8 +300,16 @@ public class CaptureGuide : MonoBehaviour
 
         if (showDebugInfo)
         {
-            Debug.Log($"[CaptureGuide] {message}");
+            // Debug.Log($"[CaptureGuide] {message}");
         }
+    }
+
+    void OnDestroy()
+    {
+        // Clean up reusable processor
+        reusableCubeProcessor?.Dispose();
+        reusableCubeProcessor = null;
+        Debug.Log("[CaptureGuide] Cleaned up reusable processor");
     }
 
 }
