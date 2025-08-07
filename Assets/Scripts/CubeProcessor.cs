@@ -10,7 +10,7 @@ using OpenCVForUnity.ImgprocModule;
 
 public class CubeProcessor
 {
-    public readonly string ImagePath;
+    public readonly string ImagePath; // Nullable for Mat-based construction
     public Mat Image;                 // original BGR
     public Mat Resized;               // 480×640 BGR
     public readonly List<MatOfPoint> SquareContours = new();
@@ -42,6 +42,17 @@ public class CubeProcessor
     public CubeProcessor(string imagePath)
     {
         ImagePath = imagePath;
+        Image = Imgcodecs.imread(ImagePath, Imgcodecs.IMREAD_COLOR);
+        Resized = new Mat();
+        Imgproc.resize(Image, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
+    }
+    
+    public CubeProcessor(Mat inputMat)
+    {
+        ImagePath = null; // No file path for Mat-based construction
+        Image = inputMat.clone(); // Store original Mat
+        Resized = new Mat();
+        Imgproc.resize(Image, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
     }
 
     /* ---------- helpers ---------- */
@@ -55,13 +66,6 @@ public class CubeProcessor
     /* ---------- step 1: preprocess ---------- */
     public Mat ReadAndPreprocess()
     {
-        Image = Imgcodecs.imread(ImagePath, Imgcodecs.IMREAD_COLOR);
-        if (Image.empty())
-            throw new FileNotFoundException($"Image not found: {ImagePath}");
-
-        Resized = new Mat();
-        Imgproc.resize(Image, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
-
         Mat gray = new Mat();
         Imgproc.cvtColor(Resized, gray, Imgproc.COLOR_BGR2GRAY);
 
@@ -74,6 +78,12 @@ public class CubeProcessor
         Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
         Mat dilated = new Mat();
         Imgproc.dilate(edges, dilated, kernel, new Point(-1, -1), 4);
+
+        // Clean up intermediate mats
+        gray.Dispose();
+        blurred.Dispose();
+        edges.Dispose();
+        kernel.Dispose();
 
         return dilated;   // caller disposes
     }
@@ -122,7 +132,7 @@ public class CubeProcessor
         // Debug.Log($"[DetectSquares] Valid squares: {SquareContours.Count}, Rejected: {RejectedContours.Count}");
         
         if (SquareContours.Count == 0)
-            throw new Exception($"No valid contours detected in {ImagePath}");
+            throw new Exception($"No valid contours detected in {ImagePath ?? "input Mat"}");
     }
     
     /* ---------- step 3a: prune to cube boundary ---------- */
@@ -481,7 +491,8 @@ public class CubeProcessor
     /* ---------- main processing pipeline ---------- */
     public List<Vector3> ProcessImage()
     {
-        Debug.Log($"[ProcessImage] Starting processing pipeline for {ImagePath}");
+        string source = ImagePath ?? "input Mat";
+        Debug.Log($"[ProcessImage] Starting processing pipeline for {source}");
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         
         Mat dilated = ReadAndPreprocess();
@@ -508,77 +519,6 @@ public class CubeProcessor
         }
         
         return MeanLabValues;
-    }
-    
-    /* ---------- real-time processing methods ---------- */
-    
-    /// Preprocesses the existing Resized Mat (instead of reading from file)
-    private Mat PreprocessResizedMat()
-    {
-        if (Resized == null || Resized.empty())
-            throw new Exception("Resized Mat is null or empty - set it before calling PreprocessResizedMat()");
-
-        Mat gray = new Mat();
-        Imgproc.cvtColor(Resized, gray, Imgproc.COLOR_BGR2GRAY);
-
-        Mat blurred = new Mat();
-        Imgproc.GaussianBlur(gray, blurred, new Size(7, 7), 0);
-
-        Mat edges = new Mat();
-        Imgproc.Canny(blurred, edges, 30, 60);
-
-        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
-        Mat dilated = new Mat();
-        Imgproc.dilate(edges, dilated, kernel, new Point(-1, -1), 4);
-
-        // Clean up intermediate mats
-        gray.Dispose();
-        blurred.Dispose();
-        edges.Dispose();
-        kernel.Dispose();
-
-        return dilated;   // caller disposes
-    }
-    
-    /// Process a live camera frame for contour counting (skips color extraction)
-    public int ProcessImageForCounting(Mat inputMat)
-    {
-        // Set up input Mat - resize to expected dimensions if needed
-        if (Resized != null) Resized.Dispose();
-        
-        // Resize input to standard processing size (480x640)
-        Resized = new Mat();
-        Imgproc.resize(inputMat, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
-        
-        // Apply preprocessing
-        Mat dilated = PreprocessResizedMat();
-        
-        // Clear previous results
-        SquareContours.Clear();
-        RejectedContours.Clear();
-        SortedContours.Clear();
-        RecoveredContours.Clear();
-        
-        try
-        {
-            // Run detection pipeline (skip color extraction for performance)
-            DetectSquares(dilated);
-            PruneToCubeBoundary();
-            SelectAndSortContours();
-            RecoverMissingContours();
-            
-            return SortedContours.Count;
-        }
-        catch (Exception ex)
-        {
-            // For real-time processing, don't throw exceptions - just return 0
-            Debug.LogWarning($"[ProcessImageForCounting] Processing error: {ex.Message}");
-            return 0;
-        }
-        finally
-        {
-            dilated.Dispose();
-        }
     }
     
 }
