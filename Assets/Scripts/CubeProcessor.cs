@@ -8,7 +8,7 @@ using OpenCVForUnity.CoreModule;
 using OpenCVForUnity.ImgcodecsModule;
 using OpenCVForUnity.ImgprocModule;
 
-public class CubeProcessor
+public class CubeProcessor : IDisposable
 {
     public readonly string ImagePath; // Nullable for Mat-based construction
     public Mat Image;                 // original BGR
@@ -45,14 +45,16 @@ public class CubeProcessor
         Image = Imgcodecs.imread(ImagePath, Imgcodecs.IMREAD_COLOR);
         Resized = new Mat();
         Imgproc.resize(Image, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
+        Image.Dispose();
     }
-    
+
     public CubeProcessor(Mat inputMat)
     {
         ImagePath = null; // No file path for Mat-based construction
-        Image = inputMat.clone(); // Store original Mat
+        Image = inputMat; // Store original Mat
         Resized = new Mat();
         Imgproc.resize(Image, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
+        Image.Dispose();
     }
 
     /* ---------- helpers ---------- */
@@ -489,7 +491,7 @@ public class CubeProcessor
     }
 
     /* ---------- main processing pipeline ---------- */
-    public List<Vector3> ProcessImage()
+    public List<Vector3> ProcessImage(bool realTime = false)
     {
         string source = ImagePath ?? "input Mat";
         Debug.Log($"[ProcessImage] Starting processing pipeline for {source}");
@@ -498,27 +500,72 @@ public class CubeProcessor
         Mat dilated = ReadAndPreprocess();
         DetectSquares(dilated);
         PruneToCubeBoundary();
-        SelectAndSortContours();
-        RecoverMissingContours();
-        ComputeColors();
+        if (!realTime)
+        {
+            SelectAndSortContours();
+            RecoverMissingContours();
+            ComputeColors();
+            Debug.Log($"[ProcessImage] ✅ Result: {MeanLabValues.Count} stickers with LAB colors extracted");
+            // Final validation
+            if (MeanLabValues.Count == 9)
+            {
+                Debug.Log("[ProcessImage] ✅ SUCCESS: Found exactly 9 stickers (complete 3x3 grid)");
+            }
+            else
+            {
+                Debug.LogWarning($"[ProcessImage] ⚠️  WARNING: Expected 9 stickers, got {MeanLabValues.Count}");
+            }
+        }
+        
         
         dilated.Dispose(); // Clean up
         stopwatch.Stop();
         
         Debug.Log($"[ProcessImage] ✅ Pipeline complete in {stopwatch.ElapsedMilliseconds}ms");
-        Debug.Log($"[ProcessImage] ✅ Result: {MeanLabValues.Count} stickers with LAB colors extracted");
-        
-        // Final validation
-        if (MeanLabValues.Count == 9)
-        {
-            Debug.Log("[ProcessImage] ✅ SUCCESS: Found exactly 9 stickers (complete 3x3 grid)");
-        }
+
+        if (realTime)
+            return new List<Vector3>(); // Empty list indicates no colors
         else
+            return MeanLabValues; // Full color data
+    }
+    
+    /* ---------- disposal ---------- */
+    private bool disposed = false;
+    
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+    
+    protected virtual void Dispose(bool disposing)
+    {
+        if (!disposed)
         {
-            Debug.LogWarning($"[ProcessImage] ⚠️  WARNING: Expected 9 stickers, got {MeanLabValues.Count}");
+            if (disposing)
+            {
+                // Dispose managed Mat objects
+                Image?.Dispose();
+                Resized?.Dispose();
+                
+                // Clear collections to help GC
+                SquareContours?.Clear();
+                RejectedContours?.Clear();
+                RecoveredContours?.Clear();
+                SortedContours?.Clear();
+                MeanLabValues?.Clear();
+                
+                Debug.Log("[CubeProcessor] Disposed - all Mats cleaned up");
+            }
+            
+            disposed = true;
         }
-        
-        return MeanLabValues;
+    }
+    
+    // Finalizer in case Dispose isn't called
+    ~CubeProcessor()
+    {
+        Dispose(false);
     }
     
 }
