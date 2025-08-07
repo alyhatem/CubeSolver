@@ -27,14 +27,11 @@ public class CubeCaptureController : MonoBehaviour
 
     [Header("UI Panels")]
     public GameObject capturePanel;
-    public GameObject reviewPanel;
     public GameObject debugPanel;
 
     [Header("UI Elements")]
     public TextMeshProUGUI captureGuideText;
-    public TextMeshProUGUI retakeGuideText;
     public Button captureButton;
-    public Button retakeButton;
 
     [Header("Crop Settings")]
     public RectTransform gridOverlay; // Assign your UI overlay in Inspector
@@ -67,7 +64,6 @@ public class CubeCaptureController : MonoBehaviour
     void Start()
     {
         captureButton.onClick.AddListener(OnCapturePressed);
-        retakeButton.onClick.AddListener(OnRetakePressed);
         
         // Initialize debug UI
         if (faceDropdown != null && toggleButton != null)
@@ -93,21 +89,12 @@ public class CubeCaptureController : MonoBehaviour
     void ShowCaptureUI()
     {
         capturePanel.SetActive(true);
-        reviewPanel.SetActive(false);
-        debugPanel.SetActive(false);
-    }
-
-    void ShowReviewUI()
-    {
-        capturePanel.SetActive(false);
-        reviewPanel.SetActive(true);
         debugPanel.SetActive(false);
     }
 
     void ShowDebugUI()
     {
         capturePanel.SetActive(false);
-        reviewPanel.SetActive(false);
         debugPanel.SetActive(true);
     }   
     private Texture2D RotateTexture90CW(Texture2D src)
@@ -557,20 +544,6 @@ public class CubeCaptureController : MonoBehaviour
         Debug.Log("🗑️ [CubeCaptureController] Textures cleaned up");
     }
 
-    void OnRetakePressed()
-    {
-        if (capturedTexture != null)
-        {
-            Destroy(capturedTexture);
-            capturedTexture = null;
-        }
-        if (fullImageForProcessing != null)
-        {
-            Destroy(fullImageForProcessing);
-            fullImageForProcessing = null;
-        }
-        ShowCaptureUI();
-    }
 
     // Debug UI Methods
     private void OnFaceSelectionChanged(int value)
