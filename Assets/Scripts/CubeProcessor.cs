@@ -65,6 +65,7 @@ public class CubeProcessor : IDisposable
         Image = inputMat; // Store original Mat
         Resized = new Mat();
         Imgproc.resize(Image, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
+        // Resized = Image.clone();
         Image.Dispose();
     }
     
@@ -77,8 +78,9 @@ public class CubeProcessor : IDisposable
         // Set new input - don't store reference to avoid disposal issues
         // Process directly into Resized Mat
         Core.rotate(inputMat, inputMat, Core.ROTATE_90_CLOCKWISE);
-        
+
         Imgproc.resize(inputMat, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
+        // Resized = inputMat;
         Image = null; // No reference to original
     }
     

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEngine;
@@ -60,7 +61,14 @@ public class CaptureGuide : MonoBehaviour
     private Texture2D frameTexture;
 
     // Reusable CubeProcessor for performance optimization
-    private CubeProcessor reusableCubeProcessor;
+    private CubeProcessor processor;
+
+    // Boundary visualization using cube prefabs
+    public GameObject cubePrefab; // Drag ARMobileTemplateAssets/Prefabs cube here
+    private List<GameObject> boundaryMarkers = new List<GameObject>();
+
+    [Header("Coordinate Calibration")]
+    public Vector2 coordinateOffset = Vector2.zero; // Manual offset to align markers with cube
 
     // 3D model for single cube face (57mm standard size)
     private static readonly Point3[] FACE_3D_POINTS = {
@@ -75,7 +83,9 @@ public class CaptureGuide : MonoBehaviour
         InitializeCameraMatrix();
         
         // Initialize reusable processor for performance
-        reusableCubeProcessor = new CubeProcessor();
+        processor = new CubeProcessor();
+
+        // Boundary visualization now uses Debug.DrawLine (no setup needed)
 
         if (hintText != null)
             hintText.text = "Point camera at cube face";
@@ -217,18 +227,26 @@ public class CaptureGuide : MonoBehaviour
         // Use reusable processor for performance - eliminates per-frame allocation overhead
         var processingStopwatch = System.Diagnostics.Stopwatch.StartNew();
         
-        reusableCubeProcessor.UpdateInputMat(inputMat);
-        reusableCubeProcessor.ProcessImage(true);
+        processor.UpdateInputMat(inputMat);
+        processor.ProcessImage(true);
         
         processingStopwatch.Stop();
         
-        if (reusableCubeProcessor.SquareContours.Count >= 6)
+        if (processor.SquareContours.Count >= 6)
         {
-            UpdateTrackingStatus($"Found {reusableCubeProcessor.SquareContours.Count} stickers ({processingStopwatch.ElapsedMilliseconds}ms)", true);
+            // Extract boundary data for drawing
+            Vector4 boundary = processor.Boundary;
+            UpdateTrackingStatus($"Found {processor.SquareContours.Count} stickers ({processingStopwatch.ElapsedMilliseconds}ms)", true);
+            
+            // Draw boundary rectangle
+            DrawCubeBoundary(boundary, true);
         }
         else
         {
-            UpdateTrackingStatus($"Found {reusableCubeProcessor.SquareContours.Count} stickers ({processingStopwatch.ElapsedMilliseconds}ms)", false);
+            UpdateTrackingStatus($"Found {processor.SquareContours.Count} stickers ({processingStopwatch.ElapsedMilliseconds}ms)", false);
+            
+            // Hide boundary rectangle when tracking fails
+            // DrawCubeBoundary(Vector4.zero, false);
         }
     }
 
@@ -304,12 +322,157 @@ public class CaptureGuide : MonoBehaviour
         }
     }
 
+    // Boundary visualization now uses cube prefab instantiation
+
+    private void DrawCubeBoundary(Vector4 boundary, bool show)
+    {
+        Debug.Log($"[DrawCubeBoundary] Called with boundary=({boundary.x:F1}, {boundary.y:F1}, {boundary.z:F1}, {boundary.w:F1}), show={show}");
+
+        // Clean up existing boundary markers
+        ClearBoundaryMarkers();
+
+        if (!show)
+        {
+            Debug.Log("[DrawCubeBoundary] Not showing boundary (tracking failed)");
+            return;
+        }
+
+        if (cubePrefab == null)
+        {
+            Debug.LogWarning("[DrawCubeBoundary] cubePrefab is not assigned! Please drag ARMobileTemplateAssets/Prefabs cube to cubePrefab field");
+            return;
+        }
+
+        // Transform boundary coordinates to screen space
+        Vector2[] screenCorners = TransformBoundaryToScreenSpace(boundary);
+        
+        Debug.Log($"[DrawCubeBoundary] Screen corners: [{screenCorners[0]}, {screenCorners[1]}, {screenCorners[2]}, {screenCorners[3]}]");
+
+        // Convert screen coordinates to world space for cube instantiation
+        Camera camera = Camera.main ?? arCameraManager.GetComponent<Camera>();
+        if (camera == null)
+        {
+            Debug.LogWarning("[DrawCubeBoundary] No camera found for coordinate conversion");
+            return;
+        }
+
+        // Convert 2D screen coords to 3D world positions (closer depth for AR)
+        float cubeDepth = 1f; // 1 meter in front of camera for better AR visibility
+        Vector3[] worldCorners = new Vector3[4];
+        
+        for (int i = 0; i < 4; i++)
+        {
+            Vector3 screenPoint = new Vector3(screenCorners[i].x, screenCorners[i].y, cubeDepth);
+            worldCorners[i] = camera.ScreenToWorldPoint(screenPoint);
+        }
+
+        Debug.Log($"[DrawCubeBoundary] World corners: [{worldCorners[0]}, {worldCorners[1]}, {worldCorners[2]}, {worldCorners[3]}]");
+
+        // Instantiate small cube markers at each corner
+        for (int i = 0; i < 4; i++)
+        {
+            GameObject marker = Instantiate(cubePrefab, worldCorners[i], Quaternion.identity);
+            
+            // Scale down to be small markers
+            marker.transform.localScale = Vector3.one * 0.05f; // 5cm cubes
+            
+            // Optional: Color them green for successful tracking
+            Renderer renderer = marker.GetComponent<Renderer>();
+            if (renderer != null)
+            {
+                renderer.material.color = Color.green;
+            }
+            
+            boundaryMarkers.Add(marker);
+        }
+
+        Debug.Log($"[DrawCubeBoundary] Instantiated {boundaryMarkers.Count} cube markers at boundary corners");
+    }
+
+    private void ClearBoundaryMarkers()
+    {
+        foreach (GameObject marker in boundaryMarkers)
+        {
+            if (marker != null)
+            {
+                Destroy(marker);
+            }
+        }
+        boundaryMarkers.Clear();
+    }
+
+    private Vector2[] TransformBoundaryToScreenSpace(Vector4 boundary)
+    {
+        // Boundary is now in 480×640 resized image space (after rotation and resize)
+        float minX = boundary.x;
+        float minY = boundary.y; 
+        float maxX = boundary.z;
+        float maxY = boundary.w;
+
+        Debug.Log($"[TransformBoundary] Input boundary (480×640 space): ({minX:F1}, {minY:F1}, {maxX:F1}, {maxY:F1})");
+        Debug.Log($"[TransformBoundary] Screen size: {Screen.width} x {Screen.height}");
+
+        // Calculate scale factors from processing resolution (480×640) to screen resolution
+        float scaleX = (float)Screen.width / 480f;
+        float scaleY = (float)Screen.height / 640f;
+        
+        Debug.Log($"[TransformBoundary] Scale factors: X={scaleX:F2}, Y={scaleY:F2}");
+
+        // Scale boundary from 480×640 to full screen resolution
+        float scaledMinX = minX * scaleX;
+        float scaledMaxX = maxX * scaleX;
+        float scaledMinY = minY * scaleY;
+        float scaledMaxY = maxY * scaleY;
+
+        Debug.Log($"[TransformBoundary] After scaling (screen resolution): ({scaledMinX:F1}, {scaledMinY:F1}, {scaledMaxX:F1}, {scaledMaxY:F1})");
+
+        // Apply coordinate system conversion from OpenCV (Y-down) to Unity (Y-up)
+        // OpenCV: origin top-left, Y increases downward
+        // Unity: origin bottom-left, Y increases upward
+        float unityMinX = scaledMinX;
+        float unityMaxX = scaledMaxX;
+        // FLIP Y-AXIS: Screen.height - openCV_y converts from top-left to bottom-left origin
+        float unityMinY = Screen.height - scaledMaxY; // OpenCV maxY becomes Unity minY (bottom)
+        float unityMaxY = Screen.height - scaledMinY; // OpenCV minY becomes Unity maxY (top)
+
+        Debug.Log($"[TransformBoundary] After Y-flip (Unity coords): ({unityMinX:F1}, {unityMinY:F1}, {unityMaxX:F1}, {unityMaxY:F1})");
+
+        // Apply calibration offset for fine-tuning alignment
+        unityMinX += coordinateOffset.x;
+        unityMaxX += coordinateOffset.x;
+        unityMinY += coordinateOffset.y;
+        unityMaxY += coordinateOffset.y;
+
+        // Clamp to screen bounds for safety
+        float clampedMinX = Mathf.Clamp(unityMinX, 0, Screen.width);
+        float clampedMaxX = Mathf.Clamp(unityMaxX, 0, Screen.width);
+        float clampedMinY = Mathf.Clamp(unityMinY, 0, Screen.height);
+        float clampedMaxY = Mathf.Clamp(unityMaxY, 0, Screen.height);
+
+        Debug.Log($"[TransformBoundary] Final coords with offset ({coordinateOffset.x:F1}, {coordinateOffset.y:F1}): ({clampedMinX:F1}, {clampedMinY:F1}, {clampedMaxX:F1}, {clampedMaxY:F1})");
+
+        // Create screen space rectangle corners (Unity coordinate system)
+        Vector2[] corners = new Vector2[4];
+        
+        // Rectangle corners in Unity screen space (bottom-left origin, Y-up)
+        corners[0] = new Vector2(clampedMinX, clampedMinY); // Bottom-left
+        corners[1] = new Vector2(clampedMaxX, clampedMinY); // Bottom-right
+        corners[2] = new Vector2(clampedMaxX, clampedMaxY); // Top-right  
+        corners[3] = new Vector2(clampedMinX, clampedMaxY); // Top-left
+
+        return corners;
+    }
+
     void OnDestroy()
     {
         // Clean up reusable processor
-        reusableCubeProcessor?.Dispose();
-        reusableCubeProcessor = null;
-        Debug.Log("[CaptureGuide] Cleaned up reusable processor");
+        processor?.Dispose();
+        processor = null;
+        
+        // Clean up boundary markers
+        ClearBoundaryMarkers();
+        
+        Debug.Log("[CaptureGuide] Cleaned up reusable processor and boundary markers");
     }
 
 }
