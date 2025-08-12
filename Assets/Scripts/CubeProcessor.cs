@@ -18,6 +18,10 @@ public class CubeProcessor : IDisposable
     public readonly List<MatOfPoint> RecoveredContours = new();  // Contours recovered during processing
     public readonly List<Vector3> MeanLabValues = new();  // LAB color values for each sticker
     public Vector4 Boundary;          // (minX, minY, maxX, maxY) cube boundary
+    
+    // Adaptive threshold parameters for scale-independent detection
+    public float MinAreaPercent = 0.0008f;  // Minimum sticker area as % of image (0.08%)
+    public float MaxAreaPercent = 0.08f;    // Maximum sticker area as % of image (8%)
 
     private static readonly string[] FaceKeys = { "U", "R", "F", "D", "L", "B" };
 
@@ -136,9 +140,18 @@ public class CubeProcessor : IDisposable
         Imgproc.findContours(dilated, contours, hierarchy,
                              Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_SIMPLE);
 
-        // Debug.Log($"[DetectSquares] Found {contours.Count} total contours");
+        // Calculate adaptive area thresholds based on image size
+        float imageArea = Resized.rows() * Resized.cols(); // Total pixels in processed image
+        float minStickerArea = imageArea * MinAreaPercent;  // Dynamic minimum threshold
+        float maxStickerArea = imageArea * MaxAreaPercent;  // Dynamic maximum threshold
+
+        // Debug log the calculated thresholds
+        Debug.Log($"[DetectSquares] Image size: {Resized.cols()}×{Resized.rows()}, Total area: {imageArea:F0}");
+        Debug.Log($"[DetectSquares] Adaptive thresholds: min={minStickerArea:F0} ({MinAreaPercent * 100:F2}%), max={maxStickerArea:F0} ({MaxAreaPercent * 100:F1}%)");
+        Debug.Log($"[DetectSquares] Found {contours.Count} total contours");
 
         int candidateCount = 0;
+        int acceptedCount = 0;
         foreach (MatOfPoint c in contours)
         {
             double peri = Imgproc.arcLength(new MatOfPoint2f(c.toArray()), true);
@@ -153,26 +166,36 @@ public class CubeProcessor : IDisposable
 
             double aspect = Math.Max(w, h) / Math.Min(w, h);
             double area = w * h;
+            
+            // Determine acceptance with adaptive thresholds
+            bool aspectOk = aspect > 0.8 && aspect < 1.2;
+            bool areaOk = area > minStickerArea && area < maxStickerArea;
+            bool accepted = aspectOk && areaOk;
 
-            // Log first few candidates for debugging
-            // if (candidateCount < 5)
-            // {
-            //     Debug.Log($"  Candidate {candidateCount}: w={w:F1}, h={h:F1}, aspect={aspect:F2}, area={area:F0} -> " + 
-            //              (aspect > 0.8 && aspect < 1.2 && area > 1000 && area < 10000 ? "ACCEPT" : "REJECT"));
-            // }
+            // Log first few candidates for debugging with detailed threshold info
+            if (candidateCount < 8)
+            {
+                Debug.Log($"  Candidate {candidateCount}: w={w:F1}, h={h:F1}, aspect={aspect:F2} {(aspectOk ? "✓" : "✗")}, " + 
+                         $"area={area:F0} {(areaOk ? "✓" : "✗")} -> {(accepted ? "ACCEPT" : "REJECT")}");
+            }
             candidateCount++;
 
             // Use original detected contour instead of artificial rectangle
-            if (aspect > 0.8 && aspect < 1.2 && area > 1000 && area < 10000)
+            if (accepted)
+            {
                 SquareContours.Add(c);
+                acceptedCount++;
+            }
             else
+            {
                 RejectedContours.Add(c);
+            }
         }
 
-        // Debug.Log($"[DetectSquares] Valid squares: {SquareContours.Count}, Rejected: {RejectedContours.Count}");
+        Debug.Log($"[DetectSquares] Results: {acceptedCount} accepted, {RejectedContours.Count} rejected out of {candidateCount} candidates");
         
         if (SquareContours.Count == 0)
-            throw new Exception($"No valid contours detected in {ImagePath ?? "input Mat"}");
+            throw new Exception($"No valid contours detected in {ImagePath ?? "input Mat"} with adaptive thresholds [{minStickerArea:F0}-{maxStickerArea:F0}]");
         
         hierarchy.Dispose();
     }
@@ -540,10 +563,10 @@ public class CubeProcessor : IDisposable
         Mat dilated = ReadAndPreprocess();
         DetectSquares(dilated);
         PruneToCubeBoundary();
+        SelectAndSortContours();
+        RecoverMissingContours();
         if (!realTime)
         {
-            SelectAndSortContours();
-            RecoverMissingContours();
             ComputeColors();
             Debug.Log($"[ProcessImage] ✅ Result: {MeanLabValues.Count} stickers with LAB colors extracted");
             // Final validation

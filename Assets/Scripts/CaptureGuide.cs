@@ -17,28 +17,23 @@ using OpenCVForUnity.UnityUtils;
 using OpenCVForUnity.UnityIntegration;
 using OpenCVForUnity.VideoModule;
 
+// Data structure to hold oriented bounding box information
+public struct OrientedBoundingBox
+{
+    public Point center;
+    public float angle; // Angle in degrees from OpenCV minAreaRect
+}
+
 public class CaptureGuide : MonoBehaviour
 {
     [Header("References")]
     public ARCameraManager arCameraManager;
     public TextMeshProUGUI hintText;
-    public Material wireframeMaterial;
-
-    [Header("Debug UI")]
-    public RawImage debugImage; // Shows processed frames
-    public RawImage debugImage1; // Shows contour visualization
-    public bool showDebugUI = true; // Enable real-time debug display
 
     [Header("Performance Settings")]
     public int frameSkipCount = 2; // Process every 3rd frame
     public int analysisWidth = 640; // Higher resolution for better contour detection
     public int analysisHeight = 480;
-
-    [Header("3D Tracking Settings")]
-    public float minFaceArea = 5000f; // Minimum area for face detection
-    public float maxReprojectionError = 8.0f; // Maximum error for pose estimation
-    public bool showDebugInfo = true;
-    public bool saveDebugImages = false; // Save intermediate processing images for debugging
 
     // 3D Tracking components
     private Mat cameraMatrix;
@@ -48,11 +43,7 @@ public class CaptureGuide : MonoBehaviour
     private int frameCounter = 0;
     private float lastProcessTime = 0f;
     private bool isProcessing = false;
-    private bool isCubeTracked = false;
 
-    // Debug state
-    private int debugFrameCounter = 0;
-    private float lastDebugUpdateTime = 0f;
     
     // FPS tracking
     private int fpsFrameCount = 0;
@@ -63,20 +54,27 @@ public class CaptureGuide : MonoBehaviour
     // Reusable CubeProcessor for performance optimization
     private CubeProcessor processor;
 
-    // Boundary visualization using cube prefabs
-    public GameObject cubePrefab; // Drag ARMobileTemplateAssets/Prefabs cube here
-    private List<GameObject> boundaryMarkers = new List<GameObject>();
+    // Center anchor visualization for arrow system
+    public GameObject centerAnchorPrefab; // Drag ARMobileTemplateAssets/Prefabs cube here for center anchor
+    private GameObject centerAnchor = null;
+    private GameObject directionArrow = null;
 
     [Header("Coordinate Calibration")]
     public Vector2 coordinateOffset = Vector2.zero; // Manual offset to align markers with cube
+    
+    [Header("Adaptive Detection Thresholds")]
+    [Range(0.0001f, 0.01f)]
+    public float minStickerAreaPercent = 0.0008f; // Min sticker area as % of image (0.08%)
+    [Range(0.01f, 0.2f)]
+    public float maxStickerAreaPercent = 0.08f;   // Max sticker area as % of image (8%)
+    
+    [Header("Animated Arrow")]
+    public GameObject animatedArrowPrefab; // Drag one of the arrow prefabs from Animation_Textures here
+    
+    // CPU image dimensions for proper scaling calculation
+    private int cpuImageWidth = 0;
+    private int cpuImageHeight = 0;
 
-    // 3D model for single cube face (57mm standard size)
-    private static readonly Point3[] FACE_3D_POINTS = {
-        new Point3(-0.0285, -0.0285, 0), // bottom-left
-        new Point3( 0.0285, -0.0285, 0), // bottom-right
-        new Point3( 0.0285,  0.0285, 0), // top-right
-        new Point3(-0.0285,  0.0285, 0)  // top-left
-    };
 
     void Start()
     {
@@ -85,7 +83,7 @@ public class CaptureGuide : MonoBehaviour
         // Initialize reusable processor for performance
         processor = new CubeProcessor();
 
-        // Boundary visualization now uses Debug.DrawLine (no setup needed)
+        // Center anchor visualization (no setup needed)
 
         if (hintText != null)
             hintText.text = "Point camera at cube face";
@@ -201,6 +199,15 @@ public class CaptureGuide : MonoBehaviour
                 frameTexture.LoadRawTextureData(data);
                 frameTexture.Apply();
                 data.Dispose();
+
+                // Store CPU image dimensions for proper scaling calculation
+                cpuImageWidth = cpuImage.width;
+                cpuImageHeight = cpuImage.height;
+                
+                // Log CPU image vs screen size for debugging boundary size mismatch
+                Debug.Log($"[ProcessCurrentFrame] CPU Image size: {cpuImage.width}×{cpuImage.height}");
+                Debug.Log($"[ProcessCurrentFrame] Screen size: {Screen.width}×{Screen.height}");
+                Debug.Log($"[ProcessCurrentFrame] Texture size: {frameTexture.width}×{frameTexture.height}");
             }
             
             // Use 'using' to ensure frameMat is always disposed
@@ -227,85 +234,28 @@ public class CaptureGuide : MonoBehaviour
         // Use reusable processor for performance - eliminates per-frame allocation overhead
         var processingStopwatch = System.Diagnostics.Stopwatch.StartNew();
         
+        // Apply adaptive threshold parameters from Unity Inspector
+        processor.MinAreaPercent = minStickerAreaPercent;
+        processor.MaxAreaPercent = maxStickerAreaPercent;
+        
         processor.UpdateInputMat(inputMat);
         processor.ProcessImage(true);
         
         processingStopwatch.Stop();
         
-        if (processor.SquareContours.Count >= 6)
+        if (processor.SquareContours.Count >= 6 && processor.SquareContours.Count <= 9)
         {
-            // Extract boundary data for drawing
-            Vector4 boundary = processor.Boundary;
             UpdateTrackingStatus($"Found {processor.SquareContours.Count} stickers ({processingStopwatch.ElapsedMilliseconds}ms)", true);
             
-            // Draw boundary rectangle
-            DrawCubeBoundary(boundary, true);
+            // Draw oriented boundary using sticker contours
+            DrawCubeBoundary(processor, true);
         }
         else
         {
             UpdateTrackingStatus($"Found {processor.SquareContours.Count} stickers ({processingStopwatch.ElapsedMilliseconds}ms)", false);
             
-            // Hide boundary rectangle when tracking fails
-            // DrawCubeBoundary(Vector4.zero, false);
-        }
-    }
-
-    private bool EstimateFacePose(Point[] imageCorners, out Vector3 position, out Quaternion rotation)
-    {
-        position = Vector3.zero;
-        rotation = Quaternion.identity;
-
-        try
-        {
-            // Create MatOfPoint3f for 3D object points
-            MatOfPoint3f objectPoints = new MatOfPoint3f();
-            objectPoints.fromArray(FACE_3D_POINTS);
-
-            // Create MatOfPoint2f for 2D image points
-            MatOfPoint2f imagePoints = new MatOfPoint2f();
-            imagePoints.fromArray(imageCorners);
-
-            // Solve PnP to get pose
-            Mat rvec = new Mat();
-            Mat tvec = new Mat();
-
-            // Create MatOfDouble for distortion coefficients
-            MatOfDouble distCoeffsMat = new MatOfDouble();
-            distCoeffsMat.fromArray(new double[] { 0, 0, 0, 0 });
-
-            bool success = Calib3d.solvePnP(objectPoints, imagePoints, cameraMatrix, distCoeffsMat, rvec, tvec);
-
-            distCoeffsMat.Dispose();
-
-            if (success)
-            {
-                // Convert OpenCV pose to Unity coordinates
-                double[] tvecArray = new double[3];
-                double[] rvecArray = new double[3];
-                tvec.get(0, 0, tvecArray);
-                rvec.get(0, 0, rvecArray);
-
-                // Convert to Unity coordinate system
-                position = new Vector3((float)tvecArray[0], -(float)tvecArray[1], (float)tvecArray[2]);
-                rotation = OpenCVARUtils.ConvertRvecToRot(rvecArray);
-
-                // Transform to Unity's coordinate system (OpenCV uses right-handed, Unity uses left-handed)
-                position.z = -position.z;
-                rotation = new Quaternion(-rotation.x, rotation.y, -rotation.z, rotation.w);
-            }
-
-            // Clean up
-            objectPoints.Dispose();
-            imagePoints.Dispose();
-            rvec.Dispose();
-            tvec.Dispose();
-
-            return success;
-        }
-        catch (Exception ex)
-        {
-            Debug.LogWarning($"[CaptureGuide] Pose estimation error: {ex.Message}");
-            return false;
+            // Hide boundary when outside 6-9 range
+            DrawCubeBoundary(processor, false);
         }
     }
 
@@ -315,152 +265,214 @@ public class CaptureGuide : MonoBehaviour
 
         hintText.text = message;
         hintText.color = isTracking ? Color.green : Color.red;
-
-        if (showDebugInfo)
-        {
-            // Debug.Log($"[CaptureGuide] {message}");
-        }
     }
 
-    // Boundary visualization now uses cube prefab instantiation
-
-    private void DrawCubeBoundary(Vector4 boundary, bool show)
+    private void DrawCubeBoundary(CubeProcessor cubeProcessor, bool show)
     {
-        Debug.Log($"[DrawCubeBoundary] Called with boundary=({boundary.x:F1}, {boundary.y:F1}, {boundary.z:F1}, {boundary.w:F1}), show={show}");
+        Debug.Log($"[DrawCubeBoundary] Called with {cubeProcessor.SquareContours.Count} contours, show={show}");
 
-        // Clean up existing boundary markers
-        ClearBoundaryMarkers();
+        // Clean up existing center anchor
+        ClearCenterAnchor();
 
         if (!show)
         {
-            Debug.Log("[DrawCubeBoundary] Not showing boundary (tracking failed)");
+            Debug.Log("[DrawCubeBoundary] Not showing center anchor (tracking failed or outside 6-9 range)");
             return;
         }
 
-        if (cubePrefab == null)
+        if (centerAnchorPrefab == null)
         {
-            Debug.LogWarning("[DrawCubeBoundary] cubePrefab is not assigned! Please drag ARMobileTemplateAssets/Prefabs cube to cubePrefab field");
+            Debug.LogWarning("[DrawCubeBoundary] centerAnchorPrefab is not assigned! Please drag ARMobileTemplateAssets/Prefabs cube to centerAnchorPrefab field");
             return;
         }
 
-        // Transform boundary coordinates to screen space
-        Vector2[] screenCorners = TransformBoundaryToScreenSpace(boundary);
-        
-        Debug.Log($"[DrawCubeBoundary] Screen corners: [{screenCorners[0]}, {screenCorners[1]}, {screenCorners[2]}, {screenCorners[3]}]");
-
-        // Convert screen coordinates to world space for cube instantiation
-        Camera camera = Camera.main ?? arCameraManager.GetComponent<Camera>();
-        if (camera == null)
+        if (cubeProcessor.SquareContours.Count == 0)
         {
-            Debug.LogWarning("[DrawCubeBoundary] No camera found for coordinate conversion");
+            Debug.LogWarning("[DrawCubeBoundary] No contours available for center calculation");
             return;
         }
 
-        // Convert 2D screen coords to 3D world positions (closer depth for AR)
-        float cubeDepth = 1f; // 1 meter in front of camera for better AR visibility
-        Vector3[] worldCorners = new Vector3[4];
-        
-        for (int i = 0; i < 4; i++)
+        try
         {
-            Vector3 screenPoint = new Vector3(screenCorners[i].x, screenCorners[i].y, cubeDepth);
-            worldCorners[i] = camera.ScreenToWorldPoint(screenPoint);
-        }
-
-        Debug.Log($"[DrawCubeBoundary] World corners: [{worldCorners[0]}, {worldCorners[1]}, {worldCorners[2]}, {worldCorners[3]}]");
-
-        // Instantiate small cube markers at each corner
-        for (int i = 0; i < 4; i++)
-        {
-            GameObject marker = Instantiate(cubePrefab, worldCorners[i], Quaternion.identity);
+            // Get oriented bounding box (center and angle) from all sticker contours
+            OrientedBoundingBox orientedBox = GetOrientedBoundingBox(cubeProcessor.SquareContours);
             
-            // Scale down to be small markers
-            marker.transform.localScale = Vector3.one * 0.05f; // 5cm cubes
+            Debug.Log($"[DrawCubeBoundary] Center in 480x640 space: ({orientedBox.center.x:F1}, {orientedBox.center.y:F1}), Angle: {orientedBox.angle:F1}°");
+
+            // Transform center to screen space
+            Vector2 screenCenter = TransformCenterToScreenSpace(orientedBox.center);
             
-            // Optional: Color them green for successful tracking
-            Renderer renderer = marker.GetComponent<Renderer>();
+            Debug.Log($"[DrawCubeBoundary] Screen center: ({screenCenter.x:F1}, {screenCenter.y:F1})");
+
+            // Convert screen coordinates to world space for anchor instantiation
+            Camera camera = Camera.main ?? arCameraManager.GetComponent<Camera>();
+            if (camera == null)
+            {
+                Debug.LogWarning("[DrawCubeBoundary] No camera found for coordinate conversion");
+                return;
+            }
+
+            // Convert 2D screen center to 3D world position
+            float anchorDepth = 1f; // 1 meter in front of camera for better AR visibility
+            Vector3 screenPoint = new Vector3(screenCenter.x, screenCenter.y, anchorDepth);
+            Vector3 worldCenter = camera.ScreenToWorldPoint(screenPoint);
+
+            Debug.Log($"[DrawCubeBoundary] World center: {worldCenter}");
+
+            // Convert OpenCV angle to Unity rotation around camera's forward axis (Z-axis)
+            // OpenCV angle is typically -90° to 0°, we need to adjust for Unity coordinate system
+            float unityAngle = -orientedBox.angle; // Invert for Unity coordinate system
+            Quaternion cubeRotation = Quaternion.AngleAxis(unityAngle, Vector3.forward);
+            
+            Debug.Log($"[DrawCubeBoundary] OpenCV angle: {orientedBox.angle:F1}°, Unity angle: {unityAngle:F1}°");
+
+            // Instantiate center anchor with cube rotation
+            centerAnchor = Instantiate(centerAnchorPrefab, worldCenter, cubeRotation);
+            
+            // Scale down to be a distinctive but visible anchor
+            centerAnchor.transform.localScale = Vector3.one * 0.08f; // 8cm cube for center anchor
+            
+            // Color it blue to distinguish from corner markers
+            Renderer renderer = centerAnchor.GetComponent<Renderer>();
             if (renderer != null)
             {
-                renderer.material.color = Color.green;
+                renderer.material.color = Color.blue;
             }
+
+            Debug.Log($"[DrawCubeBoundary] Instantiated center anchor at world position: {worldCenter}");
+
+            // Create animated arrow at anchor position first, then set local offset
+            // Use cube rotation directly for the animated arrow
+            directionArrow = CreateAnimatedArrow(worldCenter, cubeRotation, 2.0f); // Scale 2.0 for big arrow
             
-            boundaryMarkers.Add(marker);
+            // Set as child FIRST, then use local positioning
+            directionArrow.transform.SetParent(centerAnchor.transform);
+            
+            // Set local position to hover above the anchor (15cm up in local space)
+            directionArrow.transform.localPosition = Vector3.up * 0.15f;
+
+            Debug.Log($"[DrawCubeBoundary] Created animated arrow as child of anchor with local offset {Vector3.up * 0.15f}");
         }
-
-        Debug.Log($"[DrawCubeBoundary] Instantiated {boundaryMarkers.Count} cube markers at boundary corners");
-    }
-
-    private void ClearBoundaryMarkers()
-    {
-        foreach (GameObject marker in boundaryMarkers)
+        catch (System.Exception ex)
         {
-            if (marker != null)
-            {
-                Destroy(marker);
-            }
+            Debug.LogError($"[DrawCubeBoundary] Error creating center anchor: {ex.Message}");
         }
-        boundaryMarkers.Clear();
     }
 
-    private Vector2[] TransformBoundaryToScreenSpace(Vector4 boundary)
+    private OrientedBoundingBox GetOrientedBoundingBox(List<MatOfPoint> squareContours)
     {
-        // Boundary is now in 480×640 resized image space (after rotation and resize)
-        float minX = boundary.x;
-        float minY = boundary.y; 
-        float maxX = boundary.z;
-        float maxY = boundary.w;
-
-        Debug.Log($"[TransformBoundary] Input boundary (480×640 space): ({minX:F1}, {minY:F1}, {maxX:F1}, {maxY:F1})");
-        Debug.Log($"[TransformBoundary] Screen size: {Screen.width} x {Screen.height}");
-
-        // Calculate scale factors from processing resolution (480×640) to screen resolution
-        float scaleX = (float)Screen.width / 480f;
-        float scaleY = (float)Screen.height / 640f;
+        // Combine all contour points into a single list (like Python: all points from all contours)
+        List<Point> allPoints = new List<Point>();
         
-        Debug.Log($"[TransformBoundary] Scale factors: X={scaleX:F2}, Y={scaleY:F2}");
+        foreach (MatOfPoint contour in squareContours)
+        {
+            Point[] contourPoints = contour.toArray();
+            allPoints.AddRange(contourPoints);
+        }
 
-        // Scale boundary from 480×640 to full screen resolution
-        float scaledMinX = minX * scaleX;
-        float scaledMaxX = maxX * scaleX;
-        float scaledMinY = minY * scaleY;
-        float scaledMaxY = maxY * scaleY;
+        if (allPoints.Count < 3)
+        {
+            Debug.LogWarning("[GetOrientedBoundingBox] Not enough points for oriented bounding box");
+            // Return center of screen as fallback with no rotation
+            return new OrientedBoundingBox 
+            { 
+                center = new Point(240, 320), // Center of 480×640 processing resolution
+                angle = 0f // No rotation fallback
+            };
+        }
 
-        Debug.Log($"[TransformBoundary] After scaling (screen resolution): ({scaledMinX:F1}, {scaledMinY:F1}, {scaledMaxX:F1}, {scaledMaxY:F1})");
+        // Create MatOfPoint2f from all combined points (minAreaRect requires MatOfPoint2f)
+        MatOfPoint2f allPointsContour = new MatOfPoint2f(allPoints.ToArray());
+
+        // Get oriented bounding rectangle (equivalent to cv2.minAreaRect)
+        RotatedRect orientedRect = Imgproc.minAreaRect(allPointsContour);
+        
+        Debug.Log($"[GetOrientedBoundingBox] RotatedRect - center: ({orientedRect.center.x:F1}, {orientedRect.center.y:F1}), size: ({orientedRect.size.width:F1}, {orientedRect.size.height:F1}), angle: {orientedRect.angle:F1}°");
+
+        allPointsContour.Dispose();
+        
+        return new OrientedBoundingBox 
+        { 
+            center = orientedRect.center, 
+            angle = (float)orientedRect.angle 
+        };
+    }
+
+    private Vector2 TransformCenterToScreenSpace(Point center)
+    {
+        Debug.Log($"[TransformCenter] CPU Image size: {cpuImageWidth} x {cpuImageHeight}");
+        Debug.Log($"[TransformCenter] Screen size: {Screen.width} x {Screen.height}");
+        Debug.Log($"[TransformCenter] Center in 480x640 space: ({center.x:F1}, {center.y:F1})");
+
+        // Calculate scale factors from processing resolution (480×640) to CPU image resolution  
+        float scaleX = (float)cpuImageWidth / 480f;
+        float scaleY = (float)cpuImageHeight / 640f;
+        
+        Debug.Log($"[TransformCenter] Scale factors (CPU based): X={scaleX:F2}, Y={scaleY:F2}");
+
+        // Scale from 480×640 to CPU image resolution
+        float scaledX = (float)center.x * scaleX;
+        float scaledY = (float)center.y * scaleY;
+
+        // Now convert from CPU image coordinates to screen coordinates
+        float cpuToScreenScaleX = (float)Screen.width / cpuImageWidth;
+        float cpuToScreenScaleY = (float)Screen.height / cpuImageHeight;
+        
+        Debug.Log($"[TransformCenter] CPU to Screen scale factors: X={cpuToScreenScaleX:F2}, Y={cpuToScreenScaleY:F2}");
+
+        // Apply CPU image to screen scaling
+        scaledX *= cpuToScreenScaleX;
+        scaledY *= cpuToScreenScaleY;
 
         // Apply coordinate system conversion from OpenCV (Y-down) to Unity (Y-up)
-        // OpenCV: origin top-left, Y increases downward
-        // Unity: origin bottom-left, Y increases upward
-        float unityMinX = scaledMinX;
-        float unityMaxX = scaledMaxX;
-        // FLIP Y-AXIS: Screen.height - openCV_y converts from top-left to bottom-left origin
-        float unityMinY = Screen.height - scaledMaxY; // OpenCV maxY becomes Unity minY (bottom)
-        float unityMaxY = Screen.height - scaledMinY; // OpenCV minY becomes Unity maxY (top)
+        float unityX = scaledX;
+        float unityY = Screen.height - scaledY; // Y-flip
 
-        Debug.Log($"[TransformBoundary] After Y-flip (Unity coords): ({unityMinX:F1}, {unityMinY:F1}, {unityMaxX:F1}, {unityMaxY:F1})");
+        // Apply calibration offset
+        unityX += coordinateOffset.x;
+        unityY += coordinateOffset.y;
 
-        // Apply calibration offset for fine-tuning alignment
-        unityMinX += coordinateOffset.x;
-        unityMaxX += coordinateOffset.x;
-        unityMinY += coordinateOffset.y;
-        unityMaxY += coordinateOffset.y;
+        // Clamp to screen bounds
+        unityX = Mathf.Clamp(unityX, 0, Screen.width);
+        unityY = Mathf.Clamp(unityY, 0, Screen.height);
 
-        // Clamp to screen bounds for safety
-        float clampedMinX = Mathf.Clamp(unityMinX, 0, Screen.width);
-        float clampedMaxX = Mathf.Clamp(unityMaxX, 0, Screen.width);
-        float clampedMinY = Mathf.Clamp(unityMinY, 0, Screen.height);
-        float clampedMaxY = Mathf.Clamp(unityMaxY, 0, Screen.height);
+        Debug.Log($"[TransformCenter] Final screen center: ({unityX:F1}, {unityY:F1})");
 
-        Debug.Log($"[TransformBoundary] Final coords with offset ({coordinateOffset.x:F1}, {coordinateOffset.y:F1}): ({clampedMinX:F1}, {clampedMinY:F1}, {clampedMaxX:F1}, {clampedMaxY:F1})");
+        return new Vector2(unityX, unityY);
+    }
 
-        // Create screen space rectangle corners (Unity coordinate system)
-        Vector2[] corners = new Vector2[4];
+    private GameObject CreateAnimatedArrow(Vector3 position, Quaternion rotation, float scale = 0.2f)
+    {
+        if (animatedArrowPrefab == null)
+        {
+            Debug.LogWarning("[CreateAnimatedArrow] No animated arrow prefab assigned! Please drag an arrow prefab to the animatedArrowPrefab field.");
+            return null;
+        }
         
-        // Rectangle corners in Unity screen space (bottom-left origin, Y-up)
-        corners[0] = new Vector2(clampedMinX, clampedMinY); // Bottom-left
-        corners[1] = new Vector2(clampedMaxX, clampedMinY); // Bottom-right
-        corners[2] = new Vector2(clampedMaxX, clampedMaxY); // Top-right  
-        corners[3] = new Vector2(clampedMinX, clampedMaxY); // Top-left
+        // Instantiate the animated arrow prefab
+        GameObject arrow = Instantiate(animatedArrowPrefab, position, rotation);
+        
+        // Scale the arrow for better visibility
+        arrow.transform.localScale = Vector3.one * scale;
+        
+        Debug.Log($"[CreateAnimatedArrow] Created animated arrow at {position} with scale {scale}");
+        
+        return arrow;
+    }
 
-        return corners;
+    private void ClearCenterAnchor()
+    {
+        if (centerAnchor != null)
+        {
+            Destroy(centerAnchor);
+            centerAnchor = null;
+        }
+        
+        if (directionArrow != null)
+        {
+            Destroy(directionArrow);
+            directionArrow = null;
+        }
     }
 
     void OnDestroy()
@@ -469,10 +481,10 @@ public class CaptureGuide : MonoBehaviour
         processor?.Dispose();
         processor = null;
         
-        // Clean up boundary markers
-        ClearBoundaryMarkers();
+        // Clean up center anchor
+        ClearCenterAnchor();
         
-        Debug.Log("[CaptureGuide] Cleaned up reusable processor and boundary markers");
+        Debug.Log("[CaptureGuide] Cleaned up reusable processor and center anchor");
     }
 
 }
