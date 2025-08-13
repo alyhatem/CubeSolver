@@ -24,6 +24,15 @@ public struct OrientedBoundingBox
     public float angle; // Angle in degrees from OpenCV minAreaRect
 }
 
+// Data structure to hold 3D pose information
+public struct Pose3D
+{
+    public Vector3 position;    // Translation in Unity world space
+    public Vector3 rotation;    // Rotation in Euler angles (degrees)
+    public bool isValid;        // Whether this pose is reliable
+    public float confidence;    // Confidence score (0-1)
+}
+
 public class CaptureGuide : MonoBehaviour
 {
     [Header("References")]
@@ -71,6 +80,20 @@ public class CaptureGuide : MonoBehaviour
     [Header("Animated Arrow")]
     public GameObject animatedArrowPrefab; // Drag one of the arrow prefabs from Animation_Textures here
     
+    [Header("3D Pose Estimation")]
+    [Range(45f, 70f)]
+    public float cubeSize = 57f; // Standard Rubik's cube size in millimeters
+    public bool use3DTracking = true; // Toggle between 2D and 3D tracking
+    [Range(0.1f, 2.0f)]
+    public float poseSmoothing = 0.8f; // Temporal smoothing factor for pose
+    [Range(0.3f, 1.0f)]
+    public float minPoseConfidence = 0.5f; // Minimum confidence to accept 3D pose
+    
+    // 3D tracking state
+    private Pose3D lastValidPose;
+    private bool hasPreviousPose = false;
+    private Vector3[] cubeCorners3D; // 8 corners of the cube in 3D model space
+    
     // CPU image dimensions for proper scaling calculation
     private int cpuImageWidth = 0;
     private int cpuImageHeight = 0;
@@ -83,7 +106,8 @@ public class CaptureGuide : MonoBehaviour
         // Initialize reusable processor for performance
         processor = new CubeProcessor();
 
-        // Center anchor visualization (no setup needed)
+        // Initialize 3D cube model
+        InitializeCubeGeometry();
 
         if (hintText != null)
             hintText.text = "Point camera at cube face";
@@ -137,6 +161,38 @@ public class CaptureGuide : MonoBehaviour
             cameraMatrix.put(0, 2, analysisWidth / 2.0);
             cameraMatrix.put(1, 2, analysisHeight / 2.0);
         }
+    }
+
+    private void InitializeCubeGeometry()
+    {
+        // Define 8 corners of a cube in 3D model space (centered at origin)
+        // Standard Rubik's cube is 57mm, so half-size is 28.5mm
+        float halfSize = cubeSize / 2f; // Convert to half-size for corner calculation
+        
+        // Define cube corners in millimeters (will convert to meters for Unity)
+        // OpenCV coordinate system: X-right, Y-down, Z-forward
+        cubeCorners3D = new Vector3[8]
+        {
+            // Front face (Z = +halfSize)
+            new Vector3(-halfSize, -halfSize, halfSize),  // 0: Front-top-left
+            new Vector3(halfSize, -halfSize, halfSize),   // 1: Front-top-right
+            new Vector3(halfSize, halfSize, halfSize),    // 2: Front-bottom-right
+            new Vector3(-halfSize, halfSize, halfSize),   // 3: Front-bottom-left
+            
+            // Back face (Z = -halfSize)
+            new Vector3(-halfSize, -halfSize, -halfSize), // 4: Back-top-left
+            new Vector3(halfSize, -halfSize, -halfSize),  // 5: Back-top-right
+            new Vector3(halfSize, halfSize, -halfSize),   // 6: Back-bottom-right
+            new Vector3(-halfSize, halfSize, -halfSize)   // 7: Back-bottom-left
+        };
+        
+        // Convert from millimeters to meters for Unity world space
+        for (int i = 0; i < cubeCorners3D.Length; i++)
+        {
+            cubeCorners3D[i] /= 1000f; // mm to meters
+        }
+        
+        Debug.Log($"[InitializeCubeGeometry] Initialized cube geometry with size {cubeSize}mm ({cubeCorners3D.Length} corners)");
     }
 
     void Update()
@@ -271,18 +327,20 @@ public class CaptureGuide : MonoBehaviour
     {
         Debug.Log($"[DrawCubeBoundary] Called with {cubeProcessor.SquareContours.Count} contours, show={show}");
 
-        // Clean up existing center anchor
-        ClearCenterAnchor();
-
         if (!show)
         {
-            Debug.Log("[DrawCubeBoundary] Not showing center anchor (tracking failed or outside 6-9 range)");
+            // Hide anchor but don't destroy (cube temporarily lost)
+            if (centerAnchor != null)
+            {
+                centerAnchor.SetActive(false);
+                Debug.Log("[DrawCubeBoundary] Hiding center anchor (tracking failed or outside 6-9 range)");
+            }
             return;
         }
 
         if (centerAnchorPrefab == null)
         {
-            Debug.LogWarning("[DrawCubeBoundary] centerAnchorPrefab is not assigned! Please drag ARMobileTemplateAssets/Prefabs cube to centerAnchorPrefab field");
+            Debug.LogWarning("[DrawCubeBoundary] centerAnchorPrefab is not assigned! Please drag a cube prefab to centerAnchorPrefab field");
             return;
         }
 
@@ -294,17 +352,7 @@ public class CaptureGuide : MonoBehaviour
 
         try
         {
-            // Get oriented bounding box (center and angle) from all sticker contours
-            OrientedBoundingBox orientedBox = GetOrientedBoundingBox(cubeProcessor.SquareContours);
-            
-            Debug.Log($"[DrawCubeBoundary] Center in 480x640 space: ({orientedBox.center.x:F1}, {orientedBox.center.y:F1}), Angle: {orientedBox.angle:F1}°");
-
-            // Transform center to screen space
-            Vector2 screenCenter = TransformCenterToScreenSpace(orientedBox.center);
-            
-            Debug.Log($"[DrawCubeBoundary] Screen center: ({screenCenter.x:F1}, {screenCenter.y:F1})");
-
-            // Convert screen coordinates to world space for anchor instantiation
+            // Get camera reference for coordinate conversion
             Camera camera = Camera.main ?? arCameraManager.GetComponent<Camera>();
             if (camera == null)
             {
@@ -312,50 +360,56 @@ public class CaptureGuide : MonoBehaviour
                 return;
             }
 
-            // Convert 2D screen center to 3D world position
-            float anchorDepth = 1f; // 1 meter in front of camera for better AR visibility
-            Vector3 screenPoint = new Vector3(screenCenter.x, screenCenter.y, anchorDepth);
-            Vector3 worldCenter = camera.ScreenToWorldPoint(screenPoint);
+            Vector3 worldCenter;
+            Quaternion cubeRotation;
 
-            Debug.Log($"[DrawCubeBoundary] World center: {worldCenter}");
-
-            // Convert OpenCV angle to Unity rotation around camera's forward axis (Z-axis)
-            // OpenCV angle is typically -90° to 0°, we need to adjust for Unity coordinate system
-            float unityAngle = -orientedBox.angle; // Invert for Unity coordinate system
-            Quaternion cubeRotation = Quaternion.AngleAxis(unityAngle, Vector3.forward);
-            
-            Debug.Log($"[DrawCubeBoundary] OpenCV angle: {orientedBox.angle:F1}°, Unity angle: {unityAngle:F1}°");
-
-            // Instantiate center anchor with cube rotation
-            centerAnchor = Instantiate(centerAnchorPrefab, worldCenter, cubeRotation);
-            
-            // Scale down to be a distinctive but visible anchor
-            centerAnchor.transform.localScale = Vector3.one * 0.08f; // 8cm cube for center anchor
-            
-            // Color it blue to distinguish from corner markers
-            Renderer renderer = centerAnchor.GetComponent<Renderer>();
-            if (renderer != null)
+            if (use3DTracking)
             {
-                renderer.material.color = Color.blue;
+                // Use full 3D pose estimation
+                Pose3D estimatedPose = EstimateCubePose3D(cubeProcessor.SquareContours);
+                
+                if (estimatedPose.isValid)
+                {
+                    // Apply temporal smoothing
+                    Pose3D smoothedPose = ApplyPoseSmoothing(estimatedPose);
+                    
+                    // Convert from camera space to world space
+                    worldCenter = ConvertCameraPoseToWorldSpace(smoothedPose.position, camera);
+                    cubeRotation = ConvertCameraRotationToWorldSpace(smoothedPose.rotation, camera);
+                    
+                    Debug.Log($"[DrawCubeBoundary] 3D Pose: world_pos=({worldCenter.x:F3}, {worldCenter.y:F3}, {worldCenter.z:F3}), confidence={smoothedPose.confidence:F2}");
+                }
+                else
+                {
+                    // Fallback to 2D tracking if 3D pose estimation fails
+                    Debug.LogWarning("[DrawCubeBoundary] 3D pose estimation failed, falling back to 2D tracking");
+                    var result = Get2DTrackingPose(cubeProcessor.SquareContours, camera);
+                    worldCenter = result.position;
+                    cubeRotation = result.rotation;
+                }
+            }
+            else
+            {
+                // Use 2D+depth tracking (original method)
+                var result = Get2DTrackingPose(cubeProcessor.SquareContours, camera);
+                worldCenter = result.position;
+                cubeRotation = result.rotation;
             }
 
-            Debug.Log($"[DrawCubeBoundary] Instantiated center anchor at world position: {worldCenter}");
-
-            // Create animated arrow at anchor position first, then set local offset
-            // Use cube rotation directly for the animated arrow
-            directionArrow = CreateAnimatedArrow(worldCenter, cubeRotation, 2.0f); // Scale 2.0 for big arrow
-            
-            // Set as child FIRST, then use local positioning
-            directionArrow.transform.SetParent(centerAnchor.transform);
-            
-            // Set local position to hover above the anchor (15cm up in local space)
-            directionArrow.transform.localPosition = Vector3.up * 0.15f;
-
-            Debug.Log($"[DrawCubeBoundary] Created animated arrow as child of anchor with local offset {Vector3.up * 0.15f}");
+            if (centerAnchor == null)
+            {
+                // CREATE ONCE on first detection
+                CreatePersistentAnchor(worldCenter, cubeRotation);
+            }
+            else
+            {
+                // UPDATE EVERY FRAME during tracking
+                UpdateAnchorTransform(worldCenter, cubeRotation);
+            }
         }
         catch (System.Exception ex)
         {
-            Debug.LogError($"[DrawCubeBoundary] Error creating center anchor: {ex.Message}");
+            Debug.LogError($"[DrawCubeBoundary] Error updating center anchor: {ex.Message}");
         }
     }
 
@@ -396,6 +450,235 @@ public class CaptureGuide : MonoBehaviour
             center = orientedRect.center, 
             angle = (float)orientedRect.angle 
         };
+    }
+
+    private List<Point> ExtractCubeCorners2D(List<MatOfPoint> squareContours)
+    {
+        if (squareContours.Count < 4)
+        {
+            Debug.LogWarning($"[ExtractCubeCorners2D] Need at least 4 stickers for corner detection, found {squareContours.Count}");
+            return new List<Point>();
+        }
+
+        // Get centers of all detected stickers
+        List<Point> stickerCenters = new List<Point>();
+        foreach (MatOfPoint contour in squareContours)
+        {
+            // Calculate centroid of each sticker
+            Point[] points = contour.toArray();
+            double sumX = 0, sumY = 0;
+            foreach (Point pt in points)
+            {
+                sumX += pt.x;
+                sumY += pt.y;
+            }
+            Point center = new Point(sumX / points.Length, sumY / points.Length);
+            stickerCenters.Add(center);
+        }
+
+        // Sort stickers to identify corner stickers (outermost positions)
+        // For now, use a simple approach: find extreme points
+        var corners = new List<Point>();
+        
+        if (stickerCenters.Count >= 4)
+        {
+            // Find 4 extreme corners: top-left, top-right, bottom-left, bottom-right
+            var topLeft = stickerCenters.OrderBy(p => p.x + p.y).First();
+            var topRight = stickerCenters.OrderBy(p => -p.x + p.y).First();
+            var bottomLeft = stickerCenters.OrderBy(p => p.x - p.y).First();
+            var bottomRight = stickerCenters.OrderBy(p => -p.x - p.y).First();
+            
+            corners.Add(topLeft);     // 0: Top-left
+            corners.Add(topRight);    // 1: Top-right  
+            corners.Add(bottomRight); // 2: Bottom-right
+            corners.Add(bottomLeft);  // 3: Bottom-left
+        }
+
+        Debug.Log($"[ExtractCubeCorners2D] Extracted {corners.Count} corners from {stickerCenters.Count} stickers");
+        return corners;
+    }
+
+    private Pose3D EstimateCubePose3D(List<MatOfPoint> squareContours)
+    {
+        var invalidPose = new Pose3D { isValid = false, confidence = 0f };
+
+        if (!use3DTracking)
+        {
+            return invalidPose;
+        }
+
+        // Extract 2D corners from detected stickers
+        List<Point> corners2D = ExtractCubeCorners2D(squareContours);
+        if (corners2D.Count < 4)
+        {
+            Debug.LogWarning("[EstimateCubePose3D] Need at least 4 corners for pose estimation");
+            return invalidPose;
+        }
+
+        try
+        {
+            // Convert 2D corners to OpenCV format
+            MatOfPoint2f imagePoints = new MatOfPoint2f(corners2D.ToArray());
+            
+            // Use first 4 corners of the front face for pose estimation
+            // Corresponds to cubeCorners3D indices: 0,1,2,3 (front face)
+            MatOfPoint3f objectPoints = new MatOfPoint3f(
+                cubeCorners3D[0], cubeCorners3D[1], cubeCorners3D[2], cubeCorners3D[3]
+            );
+
+            // Output vectors for pose
+            Mat rvec = new Mat(); // Rotation vector (Rodrigues representation)
+            Mat tvec = new Mat(); // Translation vector
+
+            // Solve PnP to get pose estimation
+            bool success = Calib3d.solvePnP(objectPoints, imagePoints, cameraMatrix, (MatOfDouble)distCoeffs, rvec, tvec);
+
+            if (!success)
+            {
+                Debug.LogWarning("[EstimateCubePose3D] solvePnP failed");
+                imagePoints.Dispose();
+                objectPoints.Dispose();
+                rvec.Dispose();
+                tvec.Dispose();
+                return invalidPose;
+            }
+
+            // Extract translation vector (position in camera space)
+            double[] tvecArray = new double[3];
+            tvec.get(0, 0, tvecArray);
+            Vector3 cameraPose = new Vector3((float)tvecArray[0], (float)tvecArray[1], (float)tvecArray[2]);
+
+            // Extract rotation vector and convert to Euler angles
+            double[] rvecArray = new double[3];
+            rvec.get(0, 0, rvecArray);
+            Vector3 rotationVector = new Vector3((float)rvecArray[0], (float)rvecArray[1], (float)rvecArray[2]);
+
+            // Convert rotation vector to Euler angles (simplified conversion)
+            float rotMagnitude = rotationVector.magnitude;
+            Vector3 eulerAngles = Vector3.zero;
+            if (rotMagnitude > 0.001f)
+            {
+                Vector3 rotAxis = rotationVector.normalized;
+                float angleDegrees = rotMagnitude * Mathf.Rad2Deg;
+                
+                // Convert Rodrigues rotation to Euler (simplified - just use magnitude as rotation around dominant axis)
+                eulerAngles = rotAxis * angleDegrees;
+            }
+
+            // Calculate confidence based on how reasonable the pose is
+            float distance = cameraPose.magnitude;
+            float confidence = 1.0f;
+            
+            // Reduce confidence for unreasonable distances
+            if (distance < 0.1f || distance > 3.0f) confidence *= 0.5f;
+            
+            // Reduce confidence for extreme rotations
+            if (eulerAngles.magnitude > 180f) confidence *= 0.3f;
+
+            var pose = new Pose3D
+            {
+                position = cameraPose,
+                rotation = eulerAngles,
+                isValid = confidence >= minPoseConfidence,
+                confidence = confidence
+            };
+
+            Debug.Log($"[EstimateCubePose3D] Pose: pos=({cameraPose.x:F3}, {cameraPose.y:F3}, {cameraPose.z:F3}), " +
+                     $"rot=({eulerAngles.x:F1}, {eulerAngles.y:F1}, {eulerAngles.z:F1}), confidence={confidence:F2}");
+
+            // Clean up OpenCV objects
+            imagePoints.Dispose();
+            objectPoints.Dispose();
+            rvec.Dispose();
+            tvec.Dispose();
+
+            return pose;
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[EstimateCubePose3D] Error during pose estimation: {ex.Message}");
+            return invalidPose;
+        }
+    }
+
+    private Pose3D ApplyPoseSmoothing(Pose3D newPose)
+    {
+        if (!newPose.isValid)
+        {
+            return newPose;
+        }
+
+        if (!hasPreviousPose)
+        {
+            // First valid pose - no smoothing needed
+            lastValidPose = newPose;
+            hasPreviousPose = true;
+            return newPose;
+        }
+
+        // Apply temporal smoothing using lerp
+        float smoothFactor = 1f - poseSmoothing; // Convert to immediate response factor
+        
+        Vector3 smoothedPosition = Vector3.Lerp(lastValidPose.position, newPose.position, smoothFactor);
+        Vector3 smoothedRotation = Vector3.Lerp(lastValidPose.rotation, newPose.rotation, smoothFactor);
+        
+        var smoothedPose = new Pose3D
+        {
+            position = smoothedPosition,
+            rotation = smoothedRotation,
+            isValid = true,
+            confidence = Mathf.Lerp(lastValidPose.confidence, newPose.confidence, smoothFactor)
+        };
+
+        lastValidPose = smoothedPose;
+        return smoothedPose;
+    }
+
+    private Vector3 ConvertCameraPoseToWorldSpace(Vector3 cameraPose, Camera camera)
+    {
+        // Convert from camera space to world space
+        // Camera space: X-right, Y-up, Z-forward (into screen)
+        // World space: depends on camera orientation
+        
+        // Transform the position from camera space to world space
+        Vector3 worldPosition = camera.transform.TransformPoint(cameraPose);
+        
+        return worldPosition;
+    }
+
+    private Quaternion ConvertCameraRotationToWorldSpace(Vector3 cameraEulerAngles, Camera camera)
+    {
+        // Convert camera space rotation to world space rotation
+        Quaternion cameraRotation = Quaternion.Euler(cameraEulerAngles);
+        Quaternion worldRotation = camera.transform.rotation * cameraRotation;
+        
+        return worldRotation;
+    }
+
+    private (Vector3 position, Quaternion rotation) Get2DTrackingPose(List<MatOfPoint> squareContours, Camera camera)
+    {
+        // Original 2D+depth tracking method (fallback)
+        OrientedBoundingBox orientedBox = GetOrientedBoundingBox(squareContours);
+        
+        Debug.Log($"[Get2DTrackingPose] Center in 480x640 space: ({orientedBox.center.x:F1}, {orientedBox.center.y:F1}), Angle: {orientedBox.angle:F1}°");
+
+        // Transform center to screen space
+        Vector2 screenCenter = TransformCenterToScreenSpace(orientedBox.center);
+        
+        Debug.Log($"[Get2DTrackingPose] Screen center: ({screenCenter.x:F1}, {screenCenter.y:F1})");
+
+        // Convert 2D screen center to 3D world position
+        float anchorDepth = 1f; // 1 meter in front of camera for better AR visibility
+        Vector3 screenPoint = new Vector3(screenCenter.x, screenCenter.y, anchorDepth);
+        Vector3 worldCenter = camera.ScreenToWorldPoint(screenPoint);
+
+        // Convert OpenCV angle to Unity rotation around camera's forward axis (Z-axis)
+        float unityAngle = -orientedBox.angle; // Invert for Unity coordinate system
+        Quaternion cubeRotation = Quaternion.AngleAxis(unityAngle, camera.transform.forward);
+        
+        Debug.Log($"[Get2DTrackingPose] World center: {worldCenter}, OpenCV angle: {orientedBox.angle:F1}°, Unity angle: {unityAngle:F1}°");
+
+        return (worldCenter, cubeRotation);
     }
 
     private Vector2 TransformCenterToScreenSpace(Point center)
@@ -441,6 +724,54 @@ public class CaptureGuide : MonoBehaviour
         return new Vector2(unityX, unityY);
     }
 
+    private void CreatePersistentAnchor(Vector3 position, Quaternion rotation)
+    {
+        if (centerAnchorPrefab == null)
+        {
+            Debug.LogWarning("[CreatePersistentAnchor] centerAnchorPrefab is not assigned! Please drag a cube prefab to centerAnchorPrefab field");
+            return;
+        }
+
+        // Create the anchor once at the initial position
+        centerAnchor = Instantiate(centerAnchorPrefab, position, rotation);
+        
+        // Set up initial properties that won't change
+        centerAnchor.transform.localScale = Vector3.one * 0.08f; // 8cm cube for center anchor
+        
+        // Color it blue to distinguish from other objects
+        Renderer renderer = centerAnchor.GetComponent<Renderer>();
+        if (renderer != null)
+        {
+            renderer.material.color = Color.blue;
+        }
+        
+        // Create animated arrow as child of the anchor
+        CreateArrowChild();
+        
+        Debug.Log($"[CreatePersistentAnchor] Created persistent anchor at {position} with rotation {rotation}");
+    }
+
+    private void UpdateAnchorTransform(Vector3 position, Quaternion rotation)
+    {
+        if (centerAnchor == null)
+        {
+            Debug.LogWarning("[UpdateAnchorTransform] Anchor is null, cannot update transform");
+            return;
+        }
+        
+        // Update position and rotation smoothly
+        centerAnchor.transform.position = position;
+        centerAnchor.transform.rotation = rotation;
+        
+        // Ensure anchor is visible
+        if (!centerAnchor.activeInHierarchy)
+        {
+            centerAnchor.SetActive(true);
+        }
+        
+        // Debug.Log($"[UpdateAnchorTransform] Updated anchor to position {position}, rotation {rotation}");
+    }
+
     private GameObject CreateAnimatedArrow(Vector3 position, Quaternion rotation, float scale = 0.2f)
     {
         if (animatedArrowPrefab == null)
@@ -460,19 +791,63 @@ public class CaptureGuide : MonoBehaviour
         return arrow;
     }
 
+    private void CreateArrowChild()
+    {
+        if (animatedArrowPrefab == null)
+        {
+            Debug.LogWarning("[CreateArrowChild] No animated arrow prefab assigned! Please drag an arrow prefab to the animatedArrowPrefab field.");
+            return;
+        }
+
+        if (centerAnchor == null)
+        {
+            Debug.LogWarning("[CreateArrowChild] No center anchor to attach arrow to.");
+            return;
+        }
+
+        // Clear any existing direction arrow
+        if (directionArrow != null)
+        {
+            Destroy(directionArrow);
+            directionArrow = null;
+        }
+
+        // Create the arrow at the anchor's position (will be offset via local position)
+        directionArrow = Instantiate(animatedArrowPrefab, centerAnchor.transform.position, centerAnchor.transform.rotation);
+        
+        // Set as child of the anchor
+        directionArrow.transform.SetParent(centerAnchor.transform);
+        
+        // Position the arrow 28cm above the anchor in world space (Y-axis)
+        directionArrow.transform.localPosition = Vector3.up * 0.28f; // 28cm = 0.28m
+        
+        // Scale the arrow for better visibility
+        directionArrow.transform.localScale = Vector3.one * 0.2f;
+        
+        Debug.Log("[CreateArrowChild] Created animated arrow as child of anchor, offset 28cm upwards");
+    }
+
     private void ClearCenterAnchor()
     {
         if (centerAnchor != null)
         {
             Destroy(centerAnchor);
             centerAnchor = null;
+            Debug.Log("[ClearCenterAnchor] Destroyed persistent center anchor");
         }
         
         if (directionArrow != null)
         {
             Destroy(directionArrow);
             directionArrow = null;
+            Debug.Log("[ClearCenterAnchor] Destroyed direction arrow");
         }
+    }
+
+    public void ResetTracking()
+    {
+        Debug.Log("[ResetTracking] Manually resetting cube tracking - destroying persistent anchors");
+        ClearCenterAnchor();
     }
 
     void OnDestroy()

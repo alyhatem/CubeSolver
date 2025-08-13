@@ -3709,9 +3709,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   arCameraManager: {fileID: 2512387468973847747}
   hintText: {fileID: 409527071}
-  frameSkipCount: 4
-  analysisWidth: 640
-  analysisHeight: 480
+  frameSkipCount: 3
+  analysisWidth: 960
+  analysisHeight: 720
   centerAnchorPrefab: {fileID: 8986328500875594450, guid: d825bbdf58c379d4290da92e387f71d0,
     type: 3}
   coordinateOffset: {x: 0, y: 0}
@@ -3719,6 +3719,10 @@ MonoBehaviour:
   maxStickerAreaPercent: 0.08
   animatedArrowPrefab: {fileID: 6983117189624316929, guid: 0599946405d19f648b560415a8c7003d,
     type: 3}
+  cubeSize: 57
+  use3DTracking: 1
+  poseSmoothing: 0.8
+  minPoseConfidence: 0.5
 --- !u!1 &2076951683
 GameObject:
   m_ObjectHideFlags: 0
