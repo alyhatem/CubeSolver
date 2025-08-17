@@ -59,6 +59,21 @@ public class CaptureGuide : MonoBehaviour
     public float rotationSmoothing = 0.1f; // 0=no smoothing, 0.1–0.2 recommended
     public Quaternion modelForwardAdjustment = Quaternion.identity; // set once if the prefab's "front" isn't +Z
 
+    [Header("Twist Tracking")]
+    public bool enableTwistTracking = true; // Enable/disable cube roll detection
+    public bool invertRoll = false; // Flip sign if your observed direction is reversed
+    [Range(0f, 0.5f)]
+    public float rollSmoothing = 0.15f; // EMA on roll; 0=no smoothing
+    [Range(10f, 90f)]
+    public float maxRollJumpPerFrame = 45f; // Clamp sudden roll changes (degrees)
+    [Range(1, 3)]
+    public int minRowsForRoll = 1; // Require at least this many valid rows (1–3)
+
+    // Twist tracking state
+    private float rollDegSmoothed = 0f;
+    private bool hasRoll = false;
+    private float lastRollTime = 0f;
+
     [Header("Coast Window")]
     [Range(0.1f, 1.0f)]
     public float coastDuration = 0.35f; // Hold last good pose for 350ms when detection drops
@@ -222,7 +237,7 @@ public class CaptureGuide : MonoBehaviour
         // [0] [1] [2]    row 0
         // [3] [4] [5]    row 1  
         // [6] [7] [8]    row 2
-        
+
         List<float> horizontalGaps = new List<float>();
         List<float> verticalGaps = new List<float>();
 
@@ -275,7 +290,7 @@ public class CaptureGuide : MonoBehaviour
         // Robust averaging: use median filtering
         horizontalGaps.Sort();
         verticalGaps.Sort();
-        
+
         float medianHorizontal = horizontalGaps[horizontalGaps.Count / 2];
         float medianVertical = verticalGaps[verticalGaps.Count / 2];
 
@@ -294,14 +309,14 @@ public class CaptureGuide : MonoBehaviour
         float dy_px = filteredVertical.Average();
 
         // Check variance (stability)
-        float hVariance = filteredHorizontal.Count > 1 ? 
+        float hVariance = filteredHorizontal.Count > 1 ?
             filteredHorizontal.Select(x => (x - dx_px) * (x - dx_px)).Average() : 0f;
-        float vVariance = filteredVertical.Count > 1 ? 
+        float vVariance = filteredVertical.Count > 1 ?
             filteredVertical.Select(x => (x - dy_px) * (x - dy_px)).Average() : 0f;
-        
+
         float hStdDev = (float)Math.Sqrt(hVariance);
         float vStdDev = (float)Math.Sqrt(vVariance);
-        
+
         float hCoefVar = dx_px > 0 ? hStdDev / dx_px : 1f; // Coefficient of variation
         float vCoefVar = dy_px > 0 ? vStdDev / dy_px : 1f;
 
@@ -328,7 +343,7 @@ public class CaptureGuide : MonoBehaviour
 
         // Measure grid spacing
         var (dx_px, dy_px, spacingValid) = MeasureGridSpacing(sortedContours);
-        
+
         if (!spacingValid || dx_px <= 0 || dy_px <= 0)
         {
             Debug.LogWarning("[EstimateDepthFromGrid] Invalid grid spacing measurement");
@@ -339,7 +354,7 @@ public class CaptureGuide : MonoBehaviour
         float physicalGapMm = cubeSize / 3f; // Gap in millimeters
         float physicalGapMeters = physicalGapMm / 1000f; // Convert to meters for depth calculation
         Debug.Log($"[EstimateDepthFromGrid] Physical gap: {cubeSize:F1}mm / 3 = {physicalGapMm:F1}mm = {physicalGapMeters:F6}m");
-        
+
         // Depth estimates from horizontal and vertical spacing
         float Zx = fx * physicalGapMeters / dx_px;
         float Zy = fy * physicalGapMeters / dy_px;
@@ -372,7 +387,7 @@ public class CaptureGuide : MonoBehaviour
 
         // Sanity check: reasonable depth range
         bool depthValid = estimatedDepth >= 0.15f && estimatedDepth <= 3.0f;
-        
+
         if (!depthValid)
         {
             Debug.LogWarning($"[EstimateDepthFromGrid] Depth {estimatedDepth:F3}m outside valid range [0.15, 3.0]m");
@@ -397,7 +412,7 @@ public class CaptureGuide : MonoBehaviour
         // Apply exponential moving average (EMA)
         float prevSmoothed = smoothedDepth;
         smoothedDepth = smoothedDepth * depthSmoothing + newDepth * (1f - depthSmoothing);
-        
+
         Debug.Log($"[ApplyDepthSmoothing] Smoothed depth: {prevSmoothed:F3}m → {smoothedDepth:F3}m (raw: {newDepth:F3}m)");
         return smoothedDepth;
     }
@@ -419,7 +434,7 @@ public class CaptureGuide : MonoBehaviour
 
         // Compute direction from world position to camera
         Vector3 dir = (cam.transform.position - worldPos).normalized;
-        
+
         // Safety check for zero distance
         if (dir.magnitude < 0.001f)
         {
@@ -443,6 +458,128 @@ public class CaptureGuide : MonoBehaviour
         {
             return targetRot;
         }
+    }
+
+    private bool TryComputeImageRowDirection(List<MatOfPoint> sortedContours, out Vector2 v_img)
+    {
+        v_img = Vector2.zero;
+
+        if (sortedContours.Count < 3)
+        {
+            return false; // Need at least 3 stickers for any row analysis
+        }
+
+        // Get sticker centers using existing CubeProcessor method
+        List<Vector2> centers = new List<Vector2>();
+        foreach (MatOfPoint contour in sortedContours)
+        {
+            Point center = CubeProcessor.ContourCenter(contour);
+            centers.Add(new Vector2((float)center.x, (float)center.y));
+        }
+
+        List<Vector2> rowDirs = new List<Vector2>();
+
+        // Analyze each potential row (0-2, 3-5, 6-8)
+        for (int row = 0; row < 3; row++)
+        {
+            int startIdx = row * 3;
+            int endIdx = startIdx + 2; // Index of rightmost sticker in row
+
+            // Check if we have enough stickers for this row
+            if (endIdx >= centers.Count)
+            {
+                // If we don't have the full row, try using what we have
+                if (startIdx + 1 < centers.Count)
+                {
+                    endIdx = startIdx + 1; // Use 2-point row direction
+                }
+                else
+                {
+                    continue; // Skip this row entirely
+                }
+            }
+
+            // Compute row direction vector (left to right)
+            Vector2 v_row = centers[endIdx] - centers[startIdx];
+
+            // Skip very small vectors (degenerate rows)
+            if (v_row.magnitude < 5f) // Minimum 5 pixels between stickers
+            {
+                continue;
+            }
+
+            // Normalize and add to list
+            rowDirs.Add(v_row.normalized);
+        }
+
+        // Check if we have enough valid rows
+        if (rowDirs.Count < minRowsForRoll)
+        {
+            return false;
+        }
+
+        // Outlier rejection by angle
+        List<float> angles = new List<float>();
+        foreach (Vector2 dir in rowDirs)
+        {
+            angles.Add(Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg);
+        }
+
+        // Compute circular median angle
+        angles.Sort();
+        float medianAngle = angles[angles.Count / 2];
+
+        // Filter outliers (more than 25° from median)
+        List<Vector2> filteredDirs = new List<Vector2>();
+        for (int i = 0; i < rowDirs.Count; i++)
+        {
+            float angleDiff = Mathf.Abs(Mathf.DeltaAngle(angles[i], medianAngle));
+            if (angleDiff <= 25f)
+            {
+                filteredDirs.Add(rowDirs[i]);
+            }
+        }
+
+        if (filteredDirs.Count == 0)
+        {
+            return false; // All directions were outliers
+        }
+
+        // Average remaining unit vectors and renormalize
+        Vector2 avgDir = Vector2.zero;
+        foreach (Vector2 dir in filteredDirs)
+        {
+            avgDir += dir;
+        }
+
+        v_img = avgDir.normalized;
+        return true;
+    }
+
+    private bool TryGetRollFromCentersDeg(List<MatOfPoint> sortedContours, out float rollDeg)
+    {
+        rollDeg = 0f;
+
+        // Get robust row direction from image analysis
+        if (!TryComputeImageRowDirection(sortedContours, out Vector2 v_img))
+        {
+            return false;
+        }
+
+        // Convert direction vector to angle in degrees
+        rollDeg = Mathf.Atan2(v_img.y, v_img.x) * Mathf.Rad2Deg;
+
+        // Apply invert flag if needed
+        if (invertRoll)
+        {
+            rollDeg = -rollDeg;
+        }
+
+        // Normalize to (-180, 180] range
+        while (rollDeg > 180f) rollDeg -= 360f;
+        while (rollDeg <= -180f) rollDeg += 360f;
+
+        return true;
     }
 
     void Update()
@@ -615,9 +752,68 @@ public class CaptureGuide : MonoBehaviour
 
             // Compute world center with depth estimation  
             var (worldCenter, depthValid) = Get2DCentroidPositionWithDepth(cubeProcessor.SortedContours, camera);
-            
+
             // Compute billboard rotation to face camera
-            Quaternion cubeRotation = ComputeBillboardRotation(worldCenter, camera);
+            Quaternion billboardRot = ComputeBillboardRotation(worldCenter, camera);
+
+            // Apply twist tracking if enabled
+            Quaternion cubeRotation = billboardRot;
+            if (enableTwistTracking && TryGetRollFromCentersDeg(cubeProcessor.SortedContours, out float rollDeg))
+            {
+                // Unwrap against last value to avoid 180° jumps
+                if (hasRoll)
+                {
+                    float unwrappedRoll = rollDeg;
+                    float diff = rollDeg - rollDegSmoothed;
+
+                    // Handle wraparound
+                    if (diff > 180f) unwrappedRoll -= 360f;
+                    else if (diff < -180f) unwrappedRoll += 360f;
+
+                    rollDeg = unwrappedRoll;
+                }
+
+                // Clamp per-frame delta to prevent sudden jumps
+                if (hasRoll)
+                {
+                    float maxDelta = maxRollJumpPerFrame;
+                    float delta = rollDeg - rollDegSmoothed;
+                    delta = Mathf.Clamp(delta, -maxDelta, maxDelta);
+                    rollDeg = rollDegSmoothed + delta;
+                }
+
+                // Apply EMA smoothing
+                if (!hasRoll)
+                {
+                    rollDegSmoothed = rollDeg;
+                    hasRoll = true;
+                }
+                else
+                {
+                    rollDegSmoothed = Mathf.Lerp(rollDegSmoothed, rollDeg, 1f - rollSmoothing);
+                }
+
+                lastRollTime = Time.time;
+
+                // Apply twist about the view axis
+                Vector3 viewAxis = (camera.transform.position - worldCenter).normalized;
+                if (viewAxis.sqrMagnitude > 0.001f) // Safety check for zero distance
+                {
+                    Quaternion twist = Quaternion.AngleAxis(rollDegSmoothed, viewAxis);
+                    cubeRotation = twist * billboardRot;
+
+                    Debug.Log($"[HandleGoodFrame] Roll: raw={rollDeg:F1}°, smoothed={rollDegSmoothed:F1}°, applied twist");
+                }
+                else
+                {
+                    Debug.LogWarning("[HandleGoodFrame] View axis too small, skipping twist");
+                }
+            }
+            else if (enableTwistTracking)
+            {
+                // Keep previous rollDegSmoothed (don't zero it mid-session)
+                Debug.Log("[HandleGoodFrame] Twist tracking enabled but roll detection failed");
+            }
 
             // If depth estimation fails, treat as bad frame (will trigger coast window)
             if (!depthValid && hasValidDepth)
@@ -662,23 +858,42 @@ public class CaptureGuide : MonoBehaviour
             {
                 centerAnchor.SetActive(true);
                 centerAnchor.transform.position = lastWorldPos;
-                
+
                 // Handle rotation during coast window
                 Quaternion cubeRotation;
                 if (lockOrientationToCamera)
                 {
-                    // Recompute rotation each frame to continue facing camera
+                    // Recompute billboard rotation each frame to continue facing camera
                     Camera camera = Camera.main ?? arCameraManager.GetComponent<Camera>();
-                    cubeRotation = ComputeBillboardRotation(lastWorldPos, camera);
+                    Quaternion billboardRot = ComputeBillboardRotation(lastWorldPos, camera);
+
+                    // Apply stored twist if twist tracking is enabled
+                    if (enableTwistTracking && hasRoll)
+                    {
+                        Vector3 viewAxis = (camera.transform.position - lastWorldPos).normalized;
+                        if (viewAxis.sqrMagnitude > 0.001f)
+                        {
+                            Quaternion twist = Quaternion.AngleAxis(rollDegSmoothed, viewAxis);
+                            cubeRotation = twist * billboardRot;
+                        }
+                        else
+                        {
+                            cubeRotation = billboardRot;
+                        }
+                    }
+                    else
+                    {
+                        cubeRotation = billboardRot;
+                    }
                 }
                 else
                 {
                     // Use stored rotation (no billboard behavior)
                     cubeRotation = lastWorldRot;
                 }
-                
+
                 centerAnchor.transform.rotation = cubeRotation;
-                
+
                 // Debug.Log($"[HandleBadFrame] Coasting with last pose: pos=({lastWorldPos.x:F3}, {lastWorldPos.y:F3}, {lastWorldPos.z:F3}), time_remaining={(coastDuration - (Time.time - lastSeenTime)):F2}s");
             }
         }
@@ -690,7 +905,7 @@ public class CaptureGuide : MonoBehaviour
                 centerAnchor.SetActive(false);
                 // Debug.Log("[HandleBadFrame] Coast window expired, hiding anchor");
             }
-            
+
             // Reset hasLock only when coast window expires and anchor hidden
             if (hasLock)
             {
@@ -753,7 +968,7 @@ public class CaptureGuide : MonoBehaviour
         // Estimate depth from grid spacing
         var (estimatedDepth, depthValid) = EstimateDepthFromGrid(sortedContours);
         float anchorDepth;
-        
+
         if (depthValid)
         {
             // Use estimated depth with smoothing
@@ -832,13 +1047,6 @@ public class CaptureGuide : MonoBehaviour
 
         // Set up initial properties that won't change
         centerAnchor.transform.localScale = Vector3.one * 0.08f; // 8cm cube for center anchor
-
-        // Hide the cube anchor visually but keep it functional for arrow parenting
-        Renderer renderer = centerAnchor.GetComponent<Renderer>();
-        if (renderer != null)
-        {
-            renderer.enabled = false; // Hide anchor, keep arrow visible
-        }
 
         // Create animated arrow as child of the anchor
         CreateArrowChild();
