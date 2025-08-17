@@ -52,6 +52,13 @@ public class CaptureGuide : MonoBehaviour
     [Header("Animated Arrow")]
     public GameObject animatedArrowPrefab; // Drag one of the arrow prefabs from Animation_Textures here
 
+    [Header("Billboard Rotation")]
+    public bool lockOrientationToCamera = true; // Enable/disable billboard behavior
+    public bool useCameraUp = true; // true = follow device roll; false = keep world-upright (Y up)
+    [Range(0f, 0.5f)]
+    public float rotationSmoothing = 0.1f; // 0=no smoothing, 0.1–0.2 recommended
+    public Quaternion modelForwardAdjustment = Quaternion.identity; // set once if the prefab's "front" isn't +Z
+
     [Header("Coast Window")]
     [Range(0.1f, 1.0f)]
     public float coastDuration = 0.35f; // Hold last good pose for 350ms when detection drops
@@ -395,6 +402,49 @@ public class CaptureGuide : MonoBehaviour
         return smoothedDepth;
     }
 
+    private Quaternion ComputeBillboardRotation(Vector3 worldPos, Camera cam)
+    {
+        // If billboard rotation is disabled, return current rotation or identity
+        if (!lockOrientationToCamera)
+        {
+            return centerAnchor != null ? centerAnchor.transform.rotation : lastWorldRot;
+        }
+
+        // Safety check for camera
+        if (cam == null)
+        {
+            Debug.LogWarning("[ComputeBillboardRotation] Camera is null, using current rotation");
+            return centerAnchor != null ? centerAnchor.transform.rotation : Quaternion.identity;
+        }
+
+        // Compute direction from world position to camera
+        Vector3 dir = (cam.transform.position - worldPos).normalized;
+        
+        // Safety check for zero distance
+        if (dir.magnitude < 0.001f)
+        {
+            Debug.LogWarning("[ComputeBillboardRotation] Camera too close to anchor, using current rotation");
+            return centerAnchor != null ? centerAnchor.transform.rotation : Quaternion.identity;
+        }
+
+        // Choose up vector based on useCameraUp setting
+        Vector3 up = useCameraUp ? cam.transform.up : Vector3.up;
+
+        // Compute target rotation to face the camera
+        Quaternion targetRot = Quaternion.LookRotation(dir, up) * modelForwardAdjustment;
+
+        // Apply smoothing if enabled
+        if (rotationSmoothing > 0f && centerAnchor != null)
+        {
+            Quaternion currentRotation = centerAnchor.transform.rotation;
+            return Quaternion.Slerp(currentRotation, targetRot, 1f - rotationSmoothing);
+        }
+        else
+        {
+            return targetRot;
+        }
+    }
+
     void Update()
     {
         // FPS tracking for performance monitoring
@@ -565,7 +615,9 @@ public class CaptureGuide : MonoBehaviour
 
             // Compute world center with depth estimation  
             var (worldCenter, depthValid) = Get2DCentroidPositionWithDepth(cubeProcessor.SortedContours, camera);
-            Quaternion cubeRotation = Quaternion.identity; // Fronto-parallel (no rotation)
+            
+            // Compute billboard rotation to face camera
+            Quaternion cubeRotation = ComputeBillboardRotation(worldCenter, camera);
 
             // If depth estimation fails, treat as bad frame (will trigger coast window)
             if (!depthValid && hasValidDepth)
@@ -610,7 +662,22 @@ public class CaptureGuide : MonoBehaviour
             {
                 centerAnchor.SetActive(true);
                 centerAnchor.transform.position = lastWorldPos;
-                centerAnchor.transform.rotation = lastWorldRot;
+                
+                // Handle rotation during coast window
+                Quaternion cubeRotation;
+                if (lockOrientationToCamera)
+                {
+                    // Recompute rotation each frame to continue facing camera
+                    Camera camera = Camera.main ?? arCameraManager.GetComponent<Camera>();
+                    cubeRotation = ComputeBillboardRotation(lastWorldPos, camera);
+                }
+                else
+                {
+                    // Use stored rotation (no billboard behavior)
+                    cubeRotation = lastWorldRot;
+                }
+                
+                centerAnchor.transform.rotation = cubeRotation;
                 
                 // Debug.Log($"[HandleBadFrame] Coasting with last pose: pos=({lastWorldPos.x:F3}, {lastWorldPos.y:F3}, {lastWorldPos.z:F3}), time_remaining={(coastDuration - (Time.time - lastSeenTime)):F2}s");
             }
@@ -766,11 +833,11 @@ public class CaptureGuide : MonoBehaviour
         // Set up initial properties that won't change
         centerAnchor.transform.localScale = Vector3.one * 0.08f; // 8cm cube for center anchor
 
-        // Color it blue to distinguish from other objects
+        // Hide the cube anchor visually but keep it functional for arrow parenting
         Renderer renderer = centerAnchor.GetComponent<Renderer>();
         if (renderer != null)
         {
-            renderer.material.color = Color.blue;
+            renderer.enabled = false; // Hide anchor, keep arrow visible
         }
 
         // Create animated arrow as child of the anchor
