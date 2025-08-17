@@ -3710,19 +3710,17 @@ MonoBehaviour:
   arCameraManager: {fileID: 2512387468973847747}
   hintText: {fileID: 409527071}
   frameSkipCount: 3
-  analysisWidth: 960
-  analysisHeight: 720
   centerAnchorPrefab: {fileID: 8986328500875594450, guid: d825bbdf58c379d4290da92e387f71d0,
     type: 3}
   coordinateOffset: {x: 0, y: 0}
   minStickerAreaPercent: 0.0008
   maxStickerAreaPercent: 0.08
-  animatedArrowPrefab: {fileID: 6983117189624316929, guid: 0599946405d19f648b560415a8c7003d,
+  animatedArrowPrefab: {fileID: 2620953805023737550, guid: 1788a2d87e0b93e4584acf8d8df30980,
     type: 3}
+  coastDuration: 0.35
   cubeSize: 57
-  use3DTracking: 1
-  poseSmoothing: 0.8
-  minPoseConfidence: 0.5
+  depthSmoothing: 0.7
+  maxDepthVariance: 0.2
 --- !u!1 &2076951683
 GameObject:
   m_ObjectHideFlags: 0

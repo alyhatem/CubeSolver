@@ -146,9 +146,9 @@ public class CubeProcessor : IDisposable
         float maxStickerArea = imageArea * MaxAreaPercent;  // Dynamic maximum threshold
 
         // Debug log the calculated thresholds
-        Debug.Log($"[DetectSquares] Image size: {Resized.cols()}×{Resized.rows()}, Total area: {imageArea:F0}");
-        Debug.Log($"[DetectSquares] Adaptive thresholds: min={minStickerArea:F0} ({MinAreaPercent * 100:F2}%), max={maxStickerArea:F0} ({MaxAreaPercent * 100:F1}%)");
-        Debug.Log($"[DetectSquares] Found {contours.Count} total contours");
+        // Debug.Log($"[DetectSquares] Image size: {Resized.cols()}×{Resized.rows()}, Total area: {imageArea:F0}");
+        // Debug.Log($"[DetectSquares] Adaptive thresholds: min={minStickerArea:F0} ({MinAreaPercent * 100:F2}%), max={maxStickerArea:F0} ({MaxAreaPercent * 100:F1}%)");
+        // Debug.Log($"[DetectSquares] Found {contours.Count} total contours");
 
         int candidateCount = 0;
         int acceptedCount = 0;
@@ -175,8 +175,8 @@ public class CubeProcessor : IDisposable
             // Log first few candidates for debugging with detailed threshold info
             if (candidateCount < 8)
             {
-                Debug.Log($"  Candidate {candidateCount}: w={w:F1}, h={h:F1}, aspect={aspect:F2} {(aspectOk ? "✓" : "✗")}, " + 
-                         $"area={area:F0} {(areaOk ? "✓" : "✗")} -> {(accepted ? "ACCEPT" : "REJECT")}");
+                // Debug.Log($"  Candidate {candidateCount}: w={w:F1}, h={h:F1}, aspect={aspect:F2} {(aspectOk ? "✓" : "✗")}, " + 
+                        //  $"area={area:F0} {(areaOk ? "✓" : "✗")} -> {(accepted ? "ACCEPT" : "REJECT")}");
             }
             candidateCount++;
 
@@ -192,7 +192,7 @@ public class CubeProcessor : IDisposable
             }
         }
 
-        Debug.Log($"[DetectSquares] Results: {acceptedCount} accepted, {RejectedContours.Count} rejected out of {candidateCount} candidates");
+        // Debug.Log($"[DetectSquares] Results: {acceptedCount} accepted, {RejectedContours.Count} rejected out of {candidateCount} candidates");
         
         if (SquareContours.Count == 0)
             throw new Exception($"No valid contours detected in {ImagePath ?? "input Mat"} with adaptive thresholds [{minStickerArea:F0}-{maxStickerArea:F0}]");
@@ -440,7 +440,7 @@ public class CubeProcessor : IDisposable
     public void ComputeColors()
     {
         MeanLabValues.Clear();
-        Debug.Log($"[ComputeColors] Extracting colors from {SortedContours.Count} contours...");
+        // Debug.Log($"[ComputeColors] Extracting colors from {SortedContours.Count} contours...");
         
         int stickerIndex = 0;
         foreach (var contour in SortedContours)
