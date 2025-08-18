@@ -1040,6 +1040,7 @@ MonoBehaviour:
   nextButton: {fileID: 804457684}
   previousButtonImage: {fileID: 1230197129}
   nextButtonImage: {fileID: 804457685}
+  captureGuide: {fileID: 2134115848}
 --- !u!4 &1918796111
 Transform:
   m_ObjectHideFlags: 0
@@ -1177,6 +1178,7 @@ MonoBehaviour:
   maxStickerAreaPercent: 0.08
   animatedArrowPrefab: {fileID: 2620953805023737550, guid: 1788a2d87e0b93e4584acf8d8df30980,
     type: 3}
+  solverModeEnabled: 1
   lockOrientationToCamera: 1
   useCameraUp: 1
   rotationSmoothing: 0.1

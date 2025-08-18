@@ -51,6 +51,9 @@ public class CaptureGuide : MonoBehaviour
 
     [Header("Animated Arrow")]
     public GameObject animatedArrowPrefab; // Drag one of the arrow prefabs from Animation_Textures here
+    
+    [Header("Solver Integration")]
+    public bool solverModeEnabled = false; // Enable solver mode to position arrow for cube moves
 
     [Header("Billboard Rotation")]
     public bool lockOrientationToCamera = true; // Enable/disable billboard behavior
@@ -103,6 +106,41 @@ public class CaptureGuide : MonoBehaviour
     // CPU image dimensions for proper scaling calculation
     private int cpuImageWidth = 0;
     private int cpuImageHeight = 0;
+
+    // Move mapping for solver mode - easily editable positions and rotations
+    private readonly Dictionary<string, (Vector3 position, Vector3 eulerRotation)> moveMapping = new()
+    {
+        // Face Up (U) - Arrow above cube
+        {"U",  (Vector3.up * 0.30f, new Vector3(0, 0, 180))},        // Above cube, no rotation
+        {"U'", (Vector3.up * 0.30f, new Vector3(0, 0,   0))},     // Above cube, 180° Y rotation
+        {"U2", (Vector3.up * 0.30f, new Vector3(0, 0, 180))},      // Above cube, 90° Y rotation
+        
+        // Face Right (R) - Arrow to the right of cube
+        {"R",  (Vector3.right * -0.30f, new Vector3(0, 0, -90))},    // Right of cube, 90° Y rotation
+        {"R'", (Vector3.right * -0.30f, new Vector3(0, 0,  90))},  // Right of cube, 270° Y rotation
+        {"R2", (Vector3.right * -0.30f, new Vector3(0, 0, -90))},  // Right of cube, 180° Y rotation
+        
+        // Face Front (F) - Arrow in front of cube
+        {"F",  (new Vector3(0,  0.35f, -0.035f), new Vector3(-50, 0, 0))},  // Front of cube, 90° X rotation
+        {"F'", (new Vector3(0, -0.35f, -0.035f), new Vector3( 50, 0, 0))}, // Front of cube, -90° X rotation
+        {"F2", (new Vector3(0,  0.35f, -0.035f), new Vector3(-50, 0, 0))}, // Front of cube, 90° Z rotation
+        
+        // Face Down (D) - Arrow below cube
+        {"D",  (Vector3.down * 0.30f, new Vector3(0, 0,   0))},    // Below cube, 180° X rotation
+        {"D'", (Vector3.down * 0.30f, new Vector3(0, 0, 180))}, // Below cube, 180° X + 180° Y rotation
+        {"D2", (Vector3.down * 0.30f, new Vector3(0, 0,   0))},  // Below cube, 180° X + 90° Y rotation
+        
+        // Face Left (L) - Arrow to the left of cube
+        {"L",  (Vector3.left * -0.32f, new Vector3(0, 0,  90))},    // Left of cube, 270° Y rotation
+        {"L'", (Vector3.left * -0.32f, new Vector3(0, 0, -90))},    // Left of cube, 90° Y rotation
+        {"L2", (Vector3.left * -0.32f, new Vector3(0, 0,  90))},   // Left of cube, 180° Y rotation
+        
+        // Face Back (B) - Arrow behind cube
+        {"B",  (new Vector3(0, -0.35f, 0.035f), new Vector3( 50, 0, 0))},    // Back of cube, -90° X rotation
+        {"B'", (new Vector3(0,  0.35f, 0.035f), new Vector3(-50, 0, 0))},    // Back of cube, 90° X rotation
+        {"B2", (new Vector3(0, -0.35f, 0.035f), new Vector3( 50, 0, 0))}    // Back of cube, -90° Z rotation
+    };
+
 
 
     void Start()
@@ -1108,10 +1146,45 @@ public class CaptureGuide : MonoBehaviour
         // directionArrow.transform.localPosition = Vector3.forward * 0.1f;
 
         // Scale the arrow for better visibility
-        directionArrow.transform.localScale = new Vector3(0.12f, 0.06f, 0.1f);
+        directionArrow.transform.localScale = new Vector3(0.12f, 0.06f, 0.2f);
 
         // Debug.Log("[CreateArrowChild] Created animated arrow as child of anchor, offset 28cm upwards");
     }
+
+    /// <summary>
+    /// Sets the arrow position and rotation to indicate a specific cube move.
+    /// Call this method when transitioning between solve steps.
+    /// </summary>
+    /// <param name="move">The cube notation (e.g., "U", "R'", "F2")</param>
+    public void SetArrowForMove(string move)
+    {
+        if (!solverModeEnabled)
+        {
+            Debug.LogWarning($"[SetArrowForMove] Solver mode not enabled. Enable solverModeEnabled to use move guidance.");
+            return;
+        }
+
+        if (directionArrow == null)
+        {
+            Debug.LogWarning($"[SetArrowForMove] No direction arrow exists. Ensure cube is being tracked first.");
+            return;
+        }
+
+        if (!moveMapping.ContainsKey(move))
+        {
+            Debug.LogWarning($"[SetArrowForMove] Unknown move '{move}'. Supported moves: U, U', U2, R, R', R2, F, F', F2, D, D', D2, L, L', L2, B, B', B2");
+            return;
+        }
+
+        var (position, eulerRotation) = moveMapping[move];
+        
+        // Update arrow position and rotation relative to cube anchor
+        directionArrow.transform.localPosition = position;
+        directionArrow.transform.localRotation = Quaternion.Euler(eulerRotation);
+
+        Debug.Log($"[SetArrowForMove] Set arrow for move '{move}': position={position}, eulerRotation={eulerRotation}");
+    }
+
 
     private void ClearCenterAnchor()
     {
