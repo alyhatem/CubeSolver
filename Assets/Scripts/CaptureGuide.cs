@@ -39,6 +39,12 @@ public class CaptureGuide : MonoBehaviour
     public GameObject centerAnchorPrefab; // Drag ARMobileTemplateAssets/Prefabs cube here for center anchor
     private GameObject centerAnchor = null;
     private GameObject directionArrow = null;
+    
+    // Solver mode state - store move when arrow doesn't exist yet
+    private string pendingMove = null;
+    
+    // Face occluder for depth testing
+    private GameObject faceOccluder = null;
 
     [Header("Coordinate Calibration")]
     public Vector2 coordinateOffset = Vector2.zero; // Manual offset to align markers with cube
@@ -54,6 +60,11 @@ public class CaptureGuide : MonoBehaviour
     
     [Header("Solver Integration")]
     public bool solverModeEnabled = false; // Enable solver mode to position arrow for cube moves
+    
+    [Header("Face Occluder")]
+    public GameObject faceOccluderPrefab; // Drag FaceOccluder.prefab here for depth testing
+    public float occluderScale = 1.03f;   // Slight oversize for clean coverage (3% larger)
+    public float occluderEpsilon = 0.001f; // 1mm push toward camera to prevent z-fighting
 
     [Header("Billboard Rotation")]
     public bool lockOrientationToCamera = true; // Enable/disable billboard behavior
@@ -135,10 +146,10 @@ public class CaptureGuide : MonoBehaviour
         {"L'", (Vector3.left * -0.32f, new Vector3(0, 0, -90))},    // Left of cube, 90° Y rotation
         {"L2", (Vector3.left * -0.32f, new Vector3(0, 0,  90))},   // Left of cube, 180° Y rotation
         
-        // Face Back (B) - Arrow behind cube
-        {"B",  (new Vector3(0, -0.35f, 0.035f), new Vector3( 50, 0, 0))},    // Back of cube, -90° X rotation
-        {"B'", (new Vector3(0,  0.35f, 0.035f), new Vector3(-50, 0, 0))},    // Back of cube, 90° X rotation
-        {"B2", (new Vector3(0, -0.35f, 0.035f), new Vector3( 50, 0, 0))}    // Back of cube, -90° Z rotation
+        // Face Back (B) - Arrow behind cube - TESTING with simple values
+        {"B",  (new Vector3(0, 0, -0.05f), new Vector3( 50, 0, 0))},    // TEST: Simple behind position
+        {"B'", (new Vector3(0, 0, -0.05f), new Vector3(-50, 0, 0))},    // TEST: Simple behind position  
+        {"B2", (new Vector3(0, 0, -0.05f), new Vector3( 50, 0, 0))}     // TEST: Simple behind position
     };
 
 
@@ -167,9 +178,9 @@ public class CaptureGuide : MonoBehaviour
         // Try to get camera intrinsics from AR Foundation
         if (arCameraManager.TryGetIntrinsics(out XRCameraIntrinsics intrinsics))
         {
-            Debug.Log($"[InitializeCameraIntrinsics] Got AR intrinsics: fx={intrinsics.focalLength.x:F1}, fy={intrinsics.focalLength.y:F1}, " +
-                     $"cx={intrinsics.principalPoint.x:F1}, cy={intrinsics.principalPoint.y:F1}, " +
-                     $"resolution={intrinsics.resolution.x}x{intrinsics.resolution.y}");
+            // Debug.Log($"[InitializeCameraIntrinsics] Got AR intrinsics: fx={intrinsics.focalLength.x:F1}, fy={intrinsics.focalLength.y:F1}, " +
+                    //  $"cx={intrinsics.principalPoint.x:F1}, cy={intrinsics.principalPoint.y:F1}, " +
+                    //  $"resolution={intrinsics.resolution.x}x{intrinsics.resolution.y}");
 
             // Transform intrinsics from native space to our 480×640 processed space
             TransformIntrinsicsToProcessedSpace(intrinsics);
@@ -225,10 +236,10 @@ public class CaptureGuide : MonoBehaviour
 
         intrinsicsInitialized = true;
 
-        Debug.Log($"[TransformIntrinsicsToProcessedSpace] Transformed to 480×640 space: " +
-                 $"fx={fx:F1}, fy={fy:F1}, cx={cx:F1}, cy={cy:F1}");
-        Debug.Log($"[TransformIntrinsicsToProcessedSpace] Transformation: {nativeWidth}×{nativeHeight} → " +
-                 $"mirror → rotate → {rotatedWidth}×{rotatedHeight} → scale → 480×640");
+        // Debug.Log($"[TransformIntrinsicsToProcessedSpace] Transformed to 480×640 space: " +
+                //  $"fx={fx:F1}, fy={fy:F1}, cx={cx:F1}, cy={cy:F1}");
+        // Debug.Log($"[TransformIntrinsicsToProcessedSpace] Transformation: {nativeWidth}×{nativeHeight} → " +
+                //  $"mirror → rotate → {rotatedWidth}×{rotatedHeight} → scale → 480×640");
     }
 
     private void SetFallbackIntrinsics()
@@ -242,8 +253,8 @@ public class CaptureGuide : MonoBehaviour
 
         intrinsicsInitialized = true;
 
-        Debug.Log($"[SetFallbackIntrinsics] Using fallback intrinsics: fx={fx:F1}, fy={fy:F1}, cx={cx:F1}, cy={cy:F1}");
-        Debug.Log($"[SetFallbackIntrinsics] Note: These are estimates for 480×640 processed space");
+        // Debug.Log($"[SetFallbackIntrinsics] Using fallback intrinsics: fx={fx:F1}, fy={fy:F1}, cx={cx:F1}, cy={cy:F1}");
+        // Debug.Log($"[SetFallbackIntrinsics] Note: These are estimates for 480×640 processed space");
     }
 
     private (float dx_px, float dy_px, bool isValid) MeasureGridSpacing(List<MatOfPoint> sortedContours)
@@ -360,9 +371,9 @@ public class CaptureGuide : MonoBehaviour
 
         bool isStable = hCoefVar < maxDepthVariance && vCoefVar < maxDepthVariance;
 
-        Debug.Log($"[MeasureGridSpacing] dx={dx_px:F1}px (cv={hCoefVar:F2}), dy={dy_px:F1}px (cv={vCoefVar:F2}), stable={isStable}");
-        Debug.Log($"[MeasureGridSpacing] Raw gaps - H: [{string.Join(",", horizontalGaps.Select(x => x.ToString("F1")))}], " +
-                 $"V: [{string.Join(",", verticalGaps.Select(x => x.ToString("F1")))}]");
+        // Debug.Log($"[MeasureGridSpacing] dx={dx_px:F1}px (cv={hCoefVar:F2}), dy={dy_px:F1}px (cv={vCoefVar:F2}), stable={isStable}");
+        // Debug.Log($"[MeasureGridSpacing] Raw gaps - H: [{string.Join(",", horizontalGaps.Select(x => x.ToString("F1")))}], " +
+                //  $"V: [{string.Join(",", verticalGaps.Select(x => x.ToString("F1")))}]");
 
         return (dx_px, dy_px, isStable);
     }
@@ -376,8 +387,8 @@ public class CaptureGuide : MonoBehaviour
         }
 
         // Debug: Log camera intrinsics and cube size
-        Debug.Log($"[EstimateDepthFromGrid] Camera intrinsics: fx={fx:F1}, fy={fy:F1}, cx={cx:F1}, cy={cy:F1}");
-        Debug.Log($"[EstimateDepthFromGrid] Cube size from inspector: {cubeSize:F1}mm");
+        // Debug.Log($"[EstimateDepthFromGrid] Camera intrinsics: fx={fx:F1}, fy={fy:F1}, cx={cx:F1}, cy={cy:F1}");
+        // Debug.Log($"[EstimateDepthFromGrid] Cube size from inspector: {cubeSize:F1}mm");
 
         // Measure grid spacing
         var (dx_px, dy_px, spacingValid) = MeasureGridSpacing(sortedContours);
@@ -391,31 +402,31 @@ public class CaptureGuide : MonoBehaviour
         // Physical gap between adjacent sticker centers (convert mm to meters)
         float physicalGapMm = cubeSize / 3f; // Gap in millimeters
         float physicalGapMeters = physicalGapMm / 1000f; // Convert to meters for depth calculation
-        Debug.Log($"[EstimateDepthFromGrid] Physical gap: {cubeSize:F1}mm / 3 = {physicalGapMm:F1}mm = {physicalGapMeters:F6}m");
+        // Debug.Log($"[EstimateDepthFromGrid] Physical gap: {cubeSize:F1}mm / 3 = {physicalGapMm:F1}mm = {physicalGapMeters:F6}m");
 
         // Depth estimates from horizontal and vertical spacing
         float Zx = fx * physicalGapMeters / dx_px;
         float Zy = fy * physicalGapMeters / dy_px;
 
-        Debug.Log($"[EstimateDepthFromGrid] Depth calculation: fx={fx:F1} * {physicalGapMeters:F6}m / {dx_px:F1}px = {Zx:F3}m");
-        Debug.Log($"[EstimateDepthFromGrid] Depth calculation: fy={fy:F1} * {physicalGapMeters:F6}m / {dy_px:F1}px = {Zy:F3}m");
+        // Debug.Log($"[EstimateDepthFromGrid] Depth calculation: fx={fx:F1} * {physicalGapMeters:F6}m / {dx_px:F1}px = {Zx:F3}m");
+        // Debug.Log($"[EstimateDepthFromGrid] Depth calculation: fy={fy:F1} * {physicalGapMeters:F6}m / {dy_px:F1}px = {Zy:F3}m");
 
         // Combine depth estimates
         float estimatedDepth;
         if (Zx > 0 && Zy > 0)
         {
             estimatedDepth = 0.5f * (Zx + Zy); // Average both estimates
-            Debug.Log($"[EstimateDepthFromGrid] Combined depth estimate: Z={(estimatedDepth):F3}m");
+            // Debug.Log($"[EstimateDepthFromGrid] Combined depth estimate: Z={(estimatedDepth):F3}m");
         }
         else if (Zx > 0)
         {
             estimatedDepth = Zx;
-            Debug.Log($"[EstimateDepthFromGrid] Using horizontal depth estimate: Z={estimatedDepth:F3}m");
+            // Debug.Log($"[EstimateDepthFromGrid] Using horizontal depth estimate: Z={estimatedDepth:F3}m");
         }
         else if (Zy > 0)
         {
             estimatedDepth = Zy;
-            Debug.Log($"[EstimateDepthFromGrid] Using vertical depth estimate: Z={estimatedDepth:F3}m");
+            // Debug.Log($"[EstimateDepthFromGrid] Using vertical depth estimate: Z={estimatedDepth:F3}m");
         }
         else
         {
@@ -443,7 +454,7 @@ public class CaptureGuide : MonoBehaviour
             // First valid depth - no smoothing needed
             smoothedDepth = newDepth;
             hasValidDepth = true;
-            Debug.Log($"[ApplyDepthSmoothing] First valid depth: {smoothedDepth:F3}m");
+            // Debug.Log($"[ApplyDepthSmoothing] First valid depth: {smoothedDepth:F3}m");
             return smoothedDepth;
         }
 
@@ -451,7 +462,7 @@ public class CaptureGuide : MonoBehaviour
         float prevSmoothed = smoothedDepth;
         smoothedDepth = smoothedDepth * depthSmoothing + newDepth * (1f - depthSmoothing);
 
-        Debug.Log($"[ApplyDepthSmoothing] Smoothed depth: {prevSmoothed:F3}m → {smoothedDepth:F3}m (raw: {newDepth:F3}m)");
+        // Debug.Log($"[ApplyDepthSmoothing] Smoothed depth: {prevSmoothed:F3}m → {smoothedDepth:F3}m (raw: {newDepth:F3}m)");
         return smoothedDepth;
     }
 
@@ -702,7 +713,7 @@ public class CaptureGuide : MonoBehaviour
         catch (Exception ex)
         {
             Debug.LogWarning($"[CaptureGuide] Frame processing error: {ex.Message}");
-            UpdateTrackingStatus("Processing error", false);
+            UpdateTrackingStatus("Cube Not Found", false);
         }
         finally
         {
@@ -840,7 +851,7 @@ public class CaptureGuide : MonoBehaviour
                     Quaternion twist = Quaternion.AngleAxis(rollDegSmoothed, viewAxis);
                     cubeRotation = twist * billboardRot;
 
-                    Debug.Log($"[HandleGoodFrame] Roll: raw={rollDeg:F1}°, smoothed={rollDegSmoothed:F1}°, applied twist");
+                    // Debug.Log($"[HandleGoodFrame] Roll: raw={rollDeg:F1}°, smoothed={rollDegSmoothed:F1}°, applied twist");
                 }
                 else
                 {
@@ -850,7 +861,7 @@ public class CaptureGuide : MonoBehaviour
             else if (enableTwistTracking)
             {
                 // Keep previous rollDegSmoothed (don't zero it mid-session)
-                Debug.Log("[HandleGoodFrame] Twist tracking enabled but roll detection failed");
+                // Debug.Log("[HandleGoodFrame] Twist tracking enabled but roll detection failed");
             }
 
             // If depth estimation fails, treat as bad frame (will trigger coast window)
@@ -879,7 +890,6 @@ public class CaptureGuide : MonoBehaviour
                 UpdateAnchorTransform(worldCenter, cubeRotation);
             }
 
-            Debug.Log($"[HandleGoodFrame] Updated pose: pos=({worldCenter.x:F3}, {worldCenter.y:F3}, {worldCenter.z:F3}), hasLock=true");
         }
         catch (System.Exception ex)
         {
@@ -1011,7 +1021,7 @@ public class CaptureGuide : MonoBehaviour
         {
             // Use estimated depth with smoothing
             anchorDepth = ApplyDepthSmoothing(estimatedDepth);
-            Debug.Log($"[Get2DCentroidPosition] Using estimated depth: {anchorDepth:F3}m");
+            // Debug.Log($"[Get2DCentroidPosition] Using estimated depth: {anchorDepth:F3}m");
         }
         else
         {
@@ -1024,7 +1034,7 @@ public class CaptureGuide : MonoBehaviour
         Vector3 screenPoint = new Vector3(screenCenter.x, screenCenter.y, anchorDepth);
         Vector3 worldCenter = camera.ScreenToWorldPoint(screenPoint);
 
-        Debug.Log($"[Get2DCentroidPosition] World center: {worldCenter} (depth: {anchorDepth:F3}m)");
+        // Debug.Log($"[Get2DCentroidPosition] World center: {worldCenter} (depth: {anchorDepth:F3}m)");
 
         return (worldCenter, depthValid);
     }
@@ -1089,7 +1099,9 @@ public class CaptureGuide : MonoBehaviour
         // Create animated arrow as child of the anchor
         CreateArrowChild();
 
-        Debug.Log($"[CreatePersistentAnchor] Created persistent anchor at {position} with rotation {rotation}");
+        // Create face occluder for depth testing
+        CreateFaceOccluderChild();
+
     }
 
     private void UpdateAnchorTransform(Vector3 position, Quaternion rotation)
@@ -1148,7 +1160,105 @@ public class CaptureGuide : MonoBehaviour
         // Scale the arrow for better visibility
         directionArrow.transform.localScale = new Vector3(0.12f, 0.06f, 0.2f);
 
-        // Debug.Log("[CreateArrowChild] Created animated arrow as child of anchor, offset 28cm upwards");
+        // Debug arrow material and render queue
+        var arrowRenderer = directionArrow.GetComponent<Renderer>();
+        if (arrowRenderer != null)
+        {
+            Material arrowMaterial = arrowRenderer.material;
+            Debug.Log($"[ARROW DEBUG] Material: {arrowMaterial.name}, Queue: {arrowMaterial.renderQueue}");
+            Debug.Log($"[ARROW DEBUG] Shader: {arrowMaterial.shader.name}");
+            
+            // Check if it's in transparent queue (should be 3000+)
+            if (arrowMaterial.renderQueue < 3000)
+            {
+                Debug.LogWarning($"[ARROW DEBUG] Arrow render queue ({arrowMaterial.renderQueue}) is too low! Should be 3000+ for depth testing to work.");
+            }
+            
+            // Log render queue category
+            string queueCategory = arrowMaterial.renderQueue < 2500 ? "Opaque" : 
+                                 arrowMaterial.renderQueue < 3000 ? "AlphaTest" : "Transparent";
+            Debug.Log($"[ARROW DEBUG] Render queue category: {queueCategory}");
+        }
+        else
+        {
+            Debug.LogError("[ARROW DEBUG] No renderer found on arrow!");
+        }
+
+        // Apply pending move if solver mode is enabled and we have a pending move
+        if (solverModeEnabled && !string.IsNullOrEmpty(pendingMove))
+        {
+            SetArrowForMove(pendingMove);
+        }
+    }
+
+    private void CreateFaceOccluderChild()
+    {
+        if (faceOccluderPrefab == null)
+        {
+            Debug.LogWarning("[CreateFaceOccluderChild] No face occluder prefab assigned! Please drag FaceOccluder.prefab to the faceOccluderPrefab field.");
+            return;
+        }
+
+        if (centerAnchor == null)
+        {
+            Debug.LogWarning("[CreateFaceOccluderChild] No center anchor to attach occluder to.");
+            return;
+        }
+
+        // Clear any existing face occluder
+        if (faceOccluder != null)
+        {
+            Destroy(faceOccluder);
+            faceOccluder = null;
+        }
+
+        // Instantiate occluder as child of centerAnchor
+        faceOccluder = Instantiate(faceOccluderPrefab, centerAnchor.transform.position, centerAnchor.transform.rotation);
+        faceOccluder.transform.SetParent(centerAnchor.transform);
+
+        // Calculate face size from cubeSize parameter (default 57mm)
+        float faceSizeM = cubeSize / 1000f; // Convert millimeters to meters
+
+        // Position on front face (+Z) with epsilon push toward camera to prevent z-fighting
+        faceOccluder.transform.localPosition = new Vector3(0, 0, faceSizeM * 0.5f + occluderEpsilon);
+        faceOccluder.transform.localRotation = Quaternion.identity; // No rotation relative to anchor
+        faceOccluder.transform.localScale = Vector3.one * faceSizeM * occluderScale;
+
+        // Configure renderer settings and verify material
+        var renderer = faceOccluder.GetComponent<Renderer>();
+        if (renderer != null)
+        {
+            // Check original material settings
+            Material material = renderer.material;
+            Debug.Log($"[OCCLUDER DEBUG] Original material: {material.name}, Queue: {material.renderQueue}");
+            
+            // Force render queue to 2000 for depth-only rendering
+            material.renderQueue = 2000;
+            
+            // Verify material settings
+            Debug.Log($"[OCCLUDER DEBUG] After queue set - Queue: {material.renderQueue}");
+            Debug.Log($"[OCCLUDER DEBUG] Material shader: {material.shader.name}");
+            
+            // Remove any collider that might have been added
+            var collider = faceOccluder.GetComponent<Collider>();
+            if (collider != null)
+            {
+                Destroy(collider);
+                Debug.Log("[OCCLUDER DEBUG] Removed MeshCollider from face occluder");
+            }
+        }
+        else
+        {
+            Debug.LogError("[OCCLUDER DEBUG] No renderer found on face occluder!");
+        }
+
+        // Log positioning details
+        Vector3 worldPos = faceOccluder.transform.position;
+        Vector3 localPos = faceOccluder.transform.localPosition;
+        Vector3 scale = faceOccluder.transform.localScale;
+        
+        Debug.Log($"[OCCLUDER DEBUG] World pos: {worldPos}, Local pos: {localPos}");
+        Debug.Log($"[OCCLUDER DEBUG] Scale: {scale}, Face size: {faceSizeM:F3}m, Occluder scale: {occluderScale}");
     }
 
     /// <summary>
@@ -1166,7 +1276,8 @@ public class CaptureGuide : MonoBehaviour
 
         if (directionArrow == null)
         {
-            Debug.LogWarning($"[SetArrowForMove] No direction arrow exists. Ensure cube is being tracked first.");
+            // Store the move for when arrow gets created
+            pendingMove = move;
             return;
         }
 
@@ -1178,11 +1289,73 @@ public class CaptureGuide : MonoBehaviour
 
         var (position, eulerRotation) = moveMapping[move];
         
-        // Update arrow position and rotation relative to cube anchor
-        directionArrow.transform.localPosition = position;
+        // Check if this is a back face move that needs world space positioning
+        bool isBackMove = move.StartsWith("B");
+        
+        if (isBackMove)
+        {
+            // For back moves, calculate world position using camera direction
+            Camera camera = Camera.main ?? arCameraManager.GetComponent<Camera>();
+            if (camera != null)
+            {
+                // Use Z component as distance, position arrow behind cube relative to camera
+                float distance = Mathf.Abs(position.z);
+                Vector3 worldPosition = centerAnchor.transform.position - camera.transform.forward * distance;
+                directionArrow.transform.position = worldPosition;
+            }
+            else
+            {
+                // Fallback to local positioning if no camera found
+                directionArrow.transform.localPosition = position;
+            }
+        }
+        else
+        {
+            // Use local positioning for all other moves (U, R, F, D, L)
+            directionArrow.transform.localPosition = position;
+        }
+        
         directionArrow.transform.localRotation = Quaternion.Euler(eulerRotation);
 
-        Debug.Log($"[SetArrowForMove] Set arrow for move '{move}': position={position}, eulerRotation={eulerRotation}");
+        // Debug transform hierarchy and positioning
+        Vector3 centerAnchorWorldPos = centerAnchor.transform.position;
+        Vector3 arrowLocalPos = directionArrow.transform.localPosition;
+        Vector3 arrowWorldPos = directionArrow.transform.position;
+        Quaternion centerAnchorRotation = centerAnchor.transform.rotation;
+        
+        Debug.Log($"[TRANSFORM DEBUG] CenterAnchor world pos: {centerAnchorWorldPos}");
+        Debug.Log($"[TRANSFORM DEBUG] CenterAnchor rotation: {centerAnchorRotation.eulerAngles}");
+        Debug.Log($"[TRANSFORM DEBUG] Arrow local pos set to: {position}");
+        Debug.Log($"[TRANSFORM DEBUG] Arrow local pos actual: {arrowLocalPos}");
+        Debug.Log($"[TRANSFORM DEBUG] Arrow world pos result: {arrowWorldPos}");
+        
+        // Calculate expected world position manually
+        Vector3 expectedWorldPos = centerAnchor.transform.TransformPoint(position);
+        Vector3 positionDiff = arrowWorldPos - expectedWorldPos;
+        
+        Debug.Log($"[TRANSFORM DEBUG] Expected world pos: {expectedWorldPos}");
+        Debug.Log($"[TRANSFORM DEBUG] Position difference: {positionDiff}");
+        
+        // Debug positioning relative to occluder
+        if (faceOccluder != null)
+        {
+            Vector3 occluderWorldPos = faceOccluder.transform.position;
+            float deltaZ = arrowWorldPos.z - occluderWorldPos.z;
+            float expectedDeltaZ = expectedWorldPos.z - occluderWorldPos.z;
+            
+            string depthStatus = deltaZ < -0.01f ? "BEHIND (should be hidden)" : 
+                               deltaZ > 0.01f ? "IN FRONT (should be visible)" : "AT SAME DEPTH";
+            
+            Debug.Log($"[MOVE DEBUG] '{move}' - Arrow Z: {arrowWorldPos.z:F3}, Occluder Z: {occluderWorldPos.z:F3}");
+            Debug.Log($"[MOVE DEBUG] Delta Z: actual={deltaZ:F3}, expected={expectedDeltaZ:F3} - {depthStatus}");
+        }
+        else
+        {
+            Debug.LogWarning("[MOVE DEBUG] No face occluder exists for depth comparison!");
+        }
+
+        // Clear any pending move since we successfully applied this one
+        pendingMove = null;
     }
 
 
@@ -1192,20 +1365,23 @@ public class CaptureGuide : MonoBehaviour
         {
             Destroy(centerAnchor);
             centerAnchor = null;
-            Debug.Log("[ClearCenterAnchor] Destroyed persistent center anchor");
         }
 
         if (directionArrow != null)
         {
             Destroy(directionArrow);
             directionArrow = null;
-            Debug.Log("[ClearCenterAnchor] Destroyed direction arrow");
+        }
+
+        if (faceOccluder != null)
+        {
+            Destroy(faceOccluder);
+            faceOccluder = null;
         }
     }
 
     public void ResetTracking()
     {
-        Debug.Log("[ResetTracking] Manually resetting cube tracking - destroying persistent anchors");
         ClearCenterAnchor();
     }
 

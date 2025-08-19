@@ -1179,6 +1179,10 @@ MonoBehaviour:
   animatedArrowPrefab: {fileID: 2620953805023737550, guid: 1788a2d87e0b93e4584acf8d8df30980,
     type: 3}
   solverModeEnabled: 1
+  faceOccluderPrefab: {fileID: 2047190104666108388, guid: 12345678abcdef123456789012345678,
+    type: 3}
+  occluderScale: 1.03
+  occluderEpsilon: 0.001
   lockOrientationToCamera: 1
   useCameraUp: 1
   rotationSmoothing: 0.1
