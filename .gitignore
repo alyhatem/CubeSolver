@@ -88,6 +88,9 @@ crashlytics-build.properties
 /[Bb]uild/
 /[Bb]uilds/
 
+# Burst compiler generated files
+/[Bb]uilds_BurstDebugInformation_DoNotShip/
+
 # third-party asset (OpenCVForUnity)
 Assets/OpenCVForUnity*/
 
