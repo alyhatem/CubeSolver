@@ -13,6 +13,9 @@ public class CubeSolverController : MonoBehaviour
     public Button nextButton;
     public Image previousButtonImage;
     public Image nextButtonImage;
+    
+    [Header("AR Integration")]
+    public CaptureGuide captureGuide; // Reference to CaptureGuide for arrow positioning
 
     [Header("Button Colors")]
     private readonly Color enabledColor = new Color(1f, 1f, 1f, 1f); // White (255,255,255,255)
@@ -71,6 +74,9 @@ public class CubeSolverController : MonoBehaviour
         // Initialize UI
         SetupUI();
         
+        // Initialize AR integration
+        InitializeARIntegration();
+        
         // Display first step
         UpdateDisplay();
     }
@@ -98,20 +104,45 @@ public class CubeSolverController : MonoBehaviour
         Debug.Log("[CubeSolverController] UI setup complete");
     }
 
+    void InitializeARIntegration()
+    {
+        if (captureGuide != null)
+        {
+            // Enable solver mode in CaptureGuide
+            captureGuide.solverModeEnabled = true;
+            Debug.Log("[CubeSolverController] AR integration initialized - solver mode enabled");
+        }
+        else
+        {
+            Debug.LogWarning("[CubeSolverController] CaptureGuide reference not assigned! Please assign it in the inspector for AR arrow guidance.");
+        }
+    }
+
     void UpdateDisplay()
     {
-        // Update instruction text
+        // Update instruction text and arrow position
         if (currentStepIndex < solutionMoves.Length)
         {
             string currentMove = solutionMoves[currentStepIndex];
             string instruction = TranslateMove(currentMove);
             instructionText.text = instruction;
             
+            // Update AR arrow position for current move
+            UpdateArrowForCurrentMove(currentMove);
+            
             Debug.Log($"[CubeSolverController] Step {currentStepIndex + 1}/{solutionMoves.Length}: {currentMove} → {instruction}");
         }
         else
         {
             instructionText.text = "Congratulations! Your cube is solved!";
+            
+            // Hide arrow when solution is complete
+            if (captureGuide != null && captureGuide.solverModeEnabled)
+            {
+                // Could add a method to hide arrow or show completion indicator
+                Debug.Log("[CubeSolverController] Solution complete - consider hiding arrow");
+            }
+            
             Debug.Log("[CubeSolverController] Solution complete!");
         }
         
@@ -132,6 +163,23 @@ public class CubeSolverController : MonoBehaviour
         nextButtonImage.color = isNextEnabled ? enabledColor : disabledColor;
         
         Debug.Log($"[CubeSolverController] Button states - Previous: {(isPreviousEnabled ? "Enabled" : "Disabled")}, Next: {(isNextEnabled ? "Enabled" : "Disabled")}");
+    }
+
+    void UpdateArrowForCurrentMove(string move)
+    {
+        if (captureGuide != null && captureGuide.solverModeEnabled)
+        {
+            captureGuide.SetArrowForMove(move);
+            Debug.Log($"[CubeSolverController] Updated arrow for move: {move}");
+        }
+        else if (captureGuide == null)
+        {
+            Debug.LogWarning("[CubeSolverController] Cannot update arrow - CaptureGuide reference is null");
+        }
+        else if (!captureGuide.solverModeEnabled)
+        {
+            Debug.LogWarning("[CubeSolverController] Cannot update arrow - solver mode not enabled in CaptureGuide");
+        }
     }
 
     string TranslateMove(string move)
@@ -173,5 +221,23 @@ public class CubeSolverController : MonoBehaviour
     public string GetCurrentMove() 
     { 
         return currentStepIndex < solutionMoves.Length ? solutionMoves[currentStepIndex] : ""; 
+    }
+    
+    /// <summary>
+    /// Test method to manually set the arrow for a specific move.
+    /// Useful for testing the AR guidance system without going through the full solution.
+    /// </summary>
+    /// <param name="testMove">Move to test (e.g., "U", "R'", "F2")</param>
+    public void TestArrowForMove(string testMove)
+    {
+        if (captureGuide != null)
+        {
+            Debug.Log($"[CubeSolverController] Testing arrow for move: {testMove}");
+            captureGuide.SetArrowForMove(testMove);
+        }
+        else
+        {
+            Debug.LogWarning("[CubeSolverController] Cannot test arrow - CaptureGuide reference is null");
+        }
     }
 }

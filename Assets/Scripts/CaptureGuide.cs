@@ -1,802 +1,1425 @@
-// using System;
-// using System.IO;
-// using System.Linq;
-// using UnityEngine;
-// using UnityEngine.XR.ARFoundation;
-// using UnityEngine.XR.ARSubsystems;
-// using TMPro;
-// using Unity.Collections;
-// using Unity.Collections.LowLevel.Unsafe;
-// using UnityEngine.UI;
-// using OpenCVForUnity.CoreModule;
-// using OpenCVForUnity.ImgprocModule;
-// using OpenCVForUnity.ImgcodecsModule;
-// using OpenCVForUnity.Calib3dModule;
-// using OpenCVForUnity.UnityUtils;
-// using OpenCVForUnity.UnityIntegration;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using UnityEngine;
+using UnityEngine.XR.ARFoundation;
+using UnityEngine.XR.ARSubsystems;
+using TMPro;
+using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+using OpenCVForUnity.UnityIntegration;
 
-// public class CaptureGuide : MonoBehaviour
-// {
-//     [Header("References")]
-//     public ARCameraManager arCameraManager;
-//     public TextMeshProUGUI hintText;
-//     public Material wireframeMaterial;
+public class CaptureGuide : MonoBehaviour
+{
+    [Header("References")]
+    public ARCameraManager arCameraManager;
+    public TextMeshProUGUI hintText;
+
+    [Header("Performance Settings")]
+    public int frameSkipCount = 2; // Process every 3rd frame
+
+    // Processing state
+    private int frameCounter = 0;
+    private float lastProcessTime = 0f;
+    private bool isProcessing = false;
+
+    // FPS tracking
+    private int fpsFrameCount = 0;
+    private float fpsLastTime = 0f;
+
+    private Texture2D frameTexture;
+
+    // Reusable CubeProcessor for performance optimization
+    private CubeProcessor processor;
+
+    // Center anchor visualization for arrow system
+    public GameObject centerAnchorPrefab; // Drag ARMobileTemplateAssets/Prefabs cube here for center anchor
+    private GameObject centerAnchor = null;
+    private GameObject directionArrow = null;
     
-//     [Header("Debug UI")]
-//     public RawImage debugImage; // Shows processed frames
-//     public RawImage debugImage1; // Shows contour visualization
-//     public bool showDebugUI = true; // Enable real-time debug display
-
-//     [Header("Performance Settings")]
-//     public int frameSkipCount = 2; // Process every 3rd frame
-//     public int analysisWidth = 640; // Higher resolution for better contour detection
-//     public int analysisHeight = 480;
-
-//     [Header("3D Tracking Settings")]
-//     public float minFaceArea = 5000f; // Minimum area for face detection
-//     public float maxReprojectionError = 8.0f; // Maximum error for pose estimation
-//     public bool showDebugInfo = true;
-//     public bool saveDebugImages = false; // Save intermediate processing images for debugging
-
-//     // 3D Tracking components
-//     private Mat cameraMatrix;
-//     private Mat distCoeffs;
+    // Solver mode state - store move when arrow doesn't exist yet
+    private string pendingMove = null;
     
-//     // Processing state
-//     private int frameCounter = 0;
-//     private float lastProcessTime = 0f;
-//     private bool isProcessing = false;
-//     private bool isCubeTracked = false;
+    // Face occluder for depth testing
+    private GameObject faceOccluder = null;
+
+    [Header("Coordinate Calibration")]
+    public Vector2 coordinateOffset = Vector2.zero; // Manual offset to align markers with cube
+
+    [Header("Adaptive Detection Thresholds")]
+    [Range(0.0001f, 0.01f)]
+    public float minStickerAreaPercent = 0.0008f; // Min sticker area as % of image (0.08%)
+    [Range(0.01f, 0.2f)]
+    public float maxStickerAreaPercent = 0.08f;   // Max sticker area as % of image (8%)
+
+    [Header("Animated Arrow")]
+    public GameObject animatedArrowPrefab; // Drag one of the arrow prefabs from Animation_Textures here
     
-//     // Debug state
-//     private int debugFrameCounter = 0;
-//     private float lastDebugUpdateTime = 0f;
+    [Header("Solver Integration")]
+    public bool solverModeEnabled = false; // Enable solver mode to position arrow for cube moves
+    
+    [Header("Face Occluder")]
+    public GameObject faceOccluderPrefab; // Drag FaceOccluder.prefab here for depth testing
+    public float occluderScale = 1.03f;   // Slight oversize for clean coverage (3% larger)
+    public float occluderEpsilon = 0.001f; // 1mm push toward camera to prevent z-fighting
 
-//     private Texture2D frameTexture;
-//     private byte[] jpgData;
+    [Header("Billboard Rotation")]
+    public bool lockOrientationToCamera = true; // Enable/disable billboard behavior
+    public bool useCameraUp = true; // true = follow device roll; false = keep world-upright (Y up)
+    [Range(0f, 0.5f)]
+    public float rotationSmoothing = 0.1f; // 0=no smoothing, 0.1–0.2 recommended
+    public Quaternion modelForwardAdjustment = Quaternion.identity; // set once if the prefab's "front" isn't +Z
 
-//     // 3D model for single cube face (57mm standard size)
-//     private static readonly Point3[] FACE_3D_POINTS = {
-//         new Point3(-0.0285, -0.0285, 0), // bottom-left
-//         new Point3( 0.0285, -0.0285, 0), // bottom-right
-//         new Point3( 0.0285,  0.0285, 0), // top-right
-//         new Point3(-0.0285,  0.0285, 0)  // top-left
-//     };
+    [Header("Twist Tracking")]
+    public bool enableTwistTracking = true; // Enable/disable cube roll detection
+    public bool invertRoll = false; // Flip sign if your observed direction is reversed
+    [Range(0f, 0.5f)]
+    public float rollSmoothing = 0.15f; // EMA on roll; 0=no smoothing
+    [Range(10f, 90f)]
+    public float maxRollJumpPerFrame = 45f; // Clamp sudden roll changes (degrees)
+    [Range(1, 3)]
+    public int minRowsForRoll = 1; // Require at least this many valid rows (1–3)
 
-//     void Start()
-//     {
-//         InitializeCameraMatrix();
+    // Twist tracking state
+    private float rollDegSmoothed = 0f;
+    private bool hasRoll = false;
+    private float lastRollTime = 0f;
+
+    [Header("Coast Window")]
+    [Range(0.1f, 1.0f)]
+    public float coastDuration = 0.35f; // Hold last good pose for 350ms when detection drops
+
+    // Coast window tracking state
+    private float lastSeenTime;
+    private bool hasLock = false;
+    private Vector3 lastWorldPos;
+    private Quaternion lastWorldRot;
+
+    [Header("Depth Estimation")]
+    [Range(40f, 80f)]
+    public float cubeSize = 100f; // Enlarged for debugging face occluder visibility (standard: 57mm)
+    [Range(0.1f, 0.9f)]
+    public float depthSmoothing = 0.7f; // Exponential moving average for depth
+    [Range(0.1f, 0.5f)]
+    public float maxDepthVariance = 0.2f; // Maximum allowed gap variance (20%)
+
+    // Camera intrinsics (transformed to 480×640 processed space)
+    private float fx, fy, cx, cy;
+    private bool intrinsicsInitialized = false;
+
+    // Depth estimation state
+    private float smoothedDepth = 1.0f; // Start with 1m default
+    private bool hasValidDepth = false;
+
+    // CPU image dimensions for proper scaling calculation
+    private int cpuImageWidth = 0;
+    private int cpuImageHeight = 0;
+
+    // Move mapping for solver mode - easily editable positions and rotations
+    private readonly Dictionary<string, (Vector3 position, Vector3 eulerRotation)> moveMapping = new()
+    {
+        // Face Up (U) - Arrow above cube
+        {"U",  (Vector3.up * 0.60f, new Vector3(0, 0, 180))},        // Above cube, no rotation
+        {"U'", (Vector3.up * 0.60f, new Vector3(0, 0,   0))},     // Above cube, 180° Y rotation
+        {"U2", (Vector3.up * 0.60f, new Vector3(0, 0, 180))},      // Above cube, 90° Y rotation
         
-//         if (hintText != null)
-//             hintText.text = "Point camera at cube face";
-//     }
-    
-//     private Texture2D RotateTexture90CW(Texture2D src)
-//     {
-//         int width = src.width;
-//         int height = src.height;
-//         Texture2D result = new Texture2D(height, width, src.format, false);
-//         Color[] pixels = src.GetPixels();
-
-//         for (int y = 0; y < height; y++)
-//         {
-//             for (int x = 0; x < width; x++)
-//             {
-//                 result.SetPixel(y, width - x - 1, pixels[y * width + x]);
-//             }
-//         }
-
-//         result.Apply();
-//         return result;
-//     }
-
-//     private void InitializeCameraMatrix()
-//     {
-//         // Create placeholder camera matrix - will be updated with AR Foundation data
-//         cameraMatrix = Mat.eye(3, 3, CvType.CV_64FC1);
-
-//         // Try to get real camera parameters from AR Foundation
-//         UpdateCameraMatrixFromAR();
-
-//         // No distortion for now
-//         distCoeffs = Mat.zeros(4, 1, CvType.CV_64FC1);
-
-//         Debug.Log("[CaptureGuide] Camera matrix initialized");
-//     }
-    
-//     private void UpdateCameraMatrixFromAR()
-//     {
-//         try
-//         {
-//             if (arCameraManager != null)
-//             {
-//                 // For now, use estimated values based on typical mobile camera parameters
-//                 // TODO: Implement proper AR Foundation camera intrinsics when available
-//                 Debug.Log("[CaptureGuide] AR camera manager available, using estimated parameters");
-//             }
-            
-//             // Fallback to estimated values
-//             float estimatedFx = analysisWidth * 0.8f; // Rough estimate
-//             float estimatedFy = analysisHeight * 0.8f;
-//             float estimatedCx = analysisWidth / 2.0f;
-//             float estimatedCy = analysisHeight / 2.0f;
-            
-//             cameraMatrix.put(0, 0, estimatedFx);
-//             cameraMatrix.put(1, 1, estimatedFy);
-//             cameraMatrix.put(0, 2, estimatedCx);
-//             cameraMatrix.put(1, 2, estimatedCy);
-            
-//             Debug.Log($"[CaptureGuide] Using estimated camera parameters: fx={estimatedFx:F1}, fy={estimatedFy:F1}");
-//         }
-//         catch (Exception ex)
-//         {
-//             Debug.LogWarning($"[CaptureGuide] Failed to get AR camera parameters: {ex.Message}");
-            
-//             // Use basic fallback values
-//             cameraMatrix.put(0, 0, 800.0);
-//             cameraMatrix.put(1, 1, 800.0);
-//             cameraMatrix.put(0, 2, analysisWidth / 2.0);
-//             cameraMatrix.put(1, 2, analysisHeight / 2.0);
-//         }
-//     }
-
-//     void Update()
-//     {
-//         if (arCameraManager == null || hintText == null || isProcessing)
-//             return;
-
-//         // Frame rate limiting - process every Nth frame
-//         frameCounter++;
-//         if (frameCounter < frameSkipCount)
-//             return;
+        // Face Right (R) - Arrow to the right of cube
+        {"R",  (new Vector3(-0.28f,  0.35f,    0.05f), new Vector3(0, 0, -90))},    // Right of cube, 90° Y rotation
+        {"R'", (new Vector3(-0.28f,  0.35f,    0.05f), new Vector3(0, 0,  90))},  // Right of cube, 270° Y rotation
+        {"R2", (new Vector3(-0.28f,  0.35f,    0.05f), new Vector3(0, 0, -90))},  // Right of cube, 180° Y rotation
         
-//         frameCounter = 0;
-
-//         // Time-based limiting - don't process more than 10 times per second
-//         if (Time.time - lastProcessTime < 0.1f)
-//             return;
-
-//         ProcessCurrentFrame();
-//     }
-
-//     unsafe void ProcessCurrentFrame()
-//     {
-//         if (!arCameraManager.TryAcquireLatestCpuImage(out XRCpuImage cpuImage))
-//         {
-//             hintText.text = "Camera not ready";
-//             return;
-//         }
-
-//         isProcessing = true;
-//         lastProcessTime = Time.time;
-
-//         try
-//         {
-//             using (cpuImage)
-//             {
-//                 var conversionParams = new XRCpuImage.ConversionParams
-//                 {
-//                     inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
-//                     outputDimensions = new Vector2Int(cpuImage.width, cpuImage.height),
-//                     outputFormat = TextureFormat.RGBA32,
-//                     transformation = XRCpuImage.Transformation.MirrorX
-//                 };
-
-//                 int size = conversionParams.outputDimensions.x * conversionParams.outputDimensions.y * 4;
-//                 var data = new NativeArray<byte>(size, Allocator.Temp);
-//                 cpuImage.Convert(conversionParams, (System.IntPtr)data.GetUnsafePtr(), size);
-
-//                 frameTexture = new Texture2D(cpuImage.width, cpuImage.height, TextureFormat.RGBA32, false);
-//                 frameTexture.LoadRawTextureData(data);
-//                 frameTexture.Apply();
-//                 data.Dispose();
-//             }
-
-//             frameTexture = RotateTexture90CW(frameTexture);
-//             Mat frameMat = new Mat(frameTexture.height, frameTexture.width, CvType.CV_8UC4);
-//             OpenCVMatUtils.Texture2DToMat(frameTexture, frameMat);
-//             Destroy(frameTexture);
-
-            
-
-//         }
-//         catch (Exception ex)
-//         {
-//             Debug.LogWarning($"[CaptureGuide] Frame processing error: {ex.Message}");
-//             UpdateTrackingStatus("Processing error", false);
-//         }
-//         finally
-//         {
-//             isProcessing = false;
-//         }
-//     }
-    
-//     private void ProcessSingleFaceTracking(Mat inpuMat)
-//     {
-//         CubeProcessor processor = null;
+        // Face Front (F) - Arrow in front of cube
+        {"F",  (new Vector3(  0.0f,  0.65f,  -0.035f), new Vector3(-50, 0, 0))},  // Front of cube, 90° X rotation
+        {"F'", (new Vector3(  0.0f,  0.05f,  -0.035f), new Vector3( 50, 0, 0))}, // Front of cube, -90° X rotation
+        {"F2", (new Vector3(  0.0f,  0.65f,  -0.035f), new Vector3(-50, 0, 0))}, // Front of cube, 90° Z rotation
         
-//         try
-//         {   
-//             // Save debug frame if enabled
-//             if (saveDebugImages)
-//             {
-//                 // SaveDebugImage(inputMat, $"input_frame_{debugFrameCounter}");
-//             }
+        // Face Down (D) - Arrow below cube
+        {"D",  (new Vector3(  0.0f,  0.05f,    0.05f), new Vector3(0, 0,   0))},    // Below cube, 180° X rotation
+        {"D'", (new Vector3(  0.0f,  0.05f,    0.05f), new Vector3(0, 0, 180))}, // Below cube, 180° X + 180° Y rotation
+        {"D2", (new Vector3(  0.0f,  0.05f,    0.05f), new Vector3(0, 0,   0))},  // Below cube, 180° X + 90° Y rotation
+        
+        // Face Left (L) - Arrow to the left of cube
+        {"L",  (new Vector3( 0.30f,  0.35f,    0.05f), new Vector3(0, 0,  90))},    // Left of cube, 270° Y rotation
+        {"L'", (new Vector3( 0.30f,  0.35f,    0.05f), new Vector3(0, 0, -90))},    // Left of cube, 90° Y rotation
+        {"L2", (new Vector3( 0.30f,  0.35f,    0.05f), new Vector3(0, 0,  90))},   // Left of cube, 180° Y rotation
+        
+        // Face Back (B) - Arrow behind cube - TESTING with simple values
+        {"B",  (new Vector3(  0.0f,  0.05f,   -0.03f), new Vector3( 50, 0, 0))},    // TEST: Simple behind position
+        {"B'", (new Vector3(  0.0f,  0.65f,   -0.03f), new Vector3(-50, 0, 0))},    // TEST: Simple behind position  
+        {"B2", (new Vector3(  0.0f,  0.05f,   -0.03f), new Vector3( 50, 0, 0))}     // TEST: Simple behind position
+    };
+
+
+
+    void Start()
+    {
+        // Initialize reusable processor for performance
+        processor = new CubeProcessor();
+
+        // Initialize camera intrinsics for depth estimation
+        InitializeCameraIntrinsics();
+
+        if (hintText != null)
+            hintText.text = "Point camera at cube face";
+    }
+
+    private void InitializeCameraIntrinsics()
+    {
+        if (arCameraManager == null)
+        {
+            Debug.LogWarning("[InitializeCameraIntrinsics] ARCameraManager is null, using fallback intrinsics");
+            SetFallbackIntrinsics();
+            return;
+        }
+
+        // Try to get camera intrinsics from AR Foundation
+        if (arCameraManager.TryGetIntrinsics(out XRCameraIntrinsics intrinsics))
+        {
+            // Debug.Log($"[InitializeCameraIntrinsics] Got AR intrinsics: fx={intrinsics.focalLength.x:F1}, fy={intrinsics.focalLength.y:F1}, " +
+                    //  $"cx={intrinsics.principalPoint.x:F1}, cy={intrinsics.principalPoint.y:F1}, " +
+                    //  $"resolution={intrinsics.resolution.x}x{intrinsics.resolution.y}");
+
+            // Transform intrinsics from native space to our 480×640 processed space
+            TransformIntrinsicsToProcessedSpace(intrinsics);
+        }
+        else
+        {
+            Debug.LogWarning("[InitializeCameraIntrinsics] Could not get AR intrinsics, using fallback");
+            SetFallbackIntrinsics();
+        }
+    }
+
+    private void TransformIntrinsicsToProcessedSpace(XRCameraIntrinsics nativeIntrinsics)
+    {
+        // Native camera parameters
+        float nativeFx = nativeIntrinsics.focalLength.x;
+        float nativeFy = nativeIntrinsics.focalLength.y;
+        float nativeCx = nativeIntrinsics.principalPoint.x;
+        float nativeCy = nativeIntrinsics.principalPoint.y;
+        int nativeWidth = nativeIntrinsics.resolution.x;
+        int nativeHeight = nativeIntrinsics.resolution.y;
+
+        // Our processing pipeline:
+        // 1. Native camera image → CPU image (same resolution)
+        // 2. Apply MirrorX transformation  
+        // 3. Rotate 90° CW
+        // 4. Resize to 480×640
+
+        // Step 1: Handle MirrorX (flip horizontally)
+        // fx stays same, fy stays same
+        // cx becomes (nativeWidth - cx), cy stays same
+        float mirroredCx = nativeWidth - nativeCx;
+
+        // Step 2: Handle 90° CW rotation
+        // After rotation: width becomes height, height becomes width
+        // New coordinates: x' = y, y' = width - x
+        // So: fx' = fy, fy' = fx, cx' = cy, cy' = nativeWidth - mirroredCx
+        float rotatedFx = nativeFy;
+        float rotatedFy = nativeFx;
+        float rotatedCx = nativeCy;
+        float rotatedCy = nativeWidth - mirroredCx;
+        int rotatedWidth = nativeHeight;  // After rotation
+        int rotatedHeight = nativeWidth;
+
+        // Step 3: Scale to 480×640 processing resolution
+        float scaleX = 480f / rotatedWidth;
+        float scaleY = 640f / rotatedHeight;
+
+        // Apply scaling to intrinsics
+        fx = rotatedFx * scaleX;
+        fy = rotatedFy * scaleY;
+        cx = rotatedCx * scaleX;
+        cy = rotatedCy * scaleY;
+
+        intrinsicsInitialized = true;
+
+        // Debug.Log($"[TransformIntrinsicsToProcessedSpace] Transformed to 480×640 space: " +
+                //  $"fx={fx:F1}, fy={fy:F1}, cx={cx:F1}, cy={cy:F1}");
+        // Debug.Log($"[TransformIntrinsicsToProcessedSpace] Transformation: {nativeWidth}×{nativeHeight} → " +
+                //  $"mirror → rotate → {rotatedWidth}×{rotatedHeight} → scale → 480×640");
+    }
+
+    private void SetFallbackIntrinsics()
+    {
+        // Fallback intrinsics for 480×640 space (typical mobile camera estimates)
+        // Typical mobile camera has FOV ~60-70°, focal length should be larger than image size
+        fx = 640f; // Focal length should be larger than the smaller dimension  
+        fy = 640f; // Keep aspect ratio similar
+        cx = 240f; // Center X (half of 480)
+        cy = 320f; // Center Y (half of 640)
+
+        intrinsicsInitialized = true;
+
+        // Debug.Log($"[SetFallbackIntrinsics] Using fallback intrinsics: fx={fx:F1}, fy={fy:F1}, cx={cx:F1}, cy={cy:F1}");
+        // Debug.Log($"[SetFallbackIntrinsics] Note: These are estimates for 480×640 processed space");
+    }
+
+    private (float dx_px, float dy_px, bool isValid) MeasureGridSpacing(List<MatOfPoint> sortedContours)
+    {
+        if (sortedContours.Count < 6)
+        {
+            // Debug.LogWarning($"[MeasureGridSpacing] Need at least 6 stickers for spacing measurement, found {sortedContours.Count}");
+            return (0f, 0f, false);
+        }
+
+        // Extract sticker centers
+        List<Point> centers = new List<Point>();
+        foreach (MatOfPoint contour in sortedContours)
+        {
+            Point[] points = contour.toArray();
+            double sumX = 0, sumY = 0;
+            foreach (Point pt in points)
+            {
+                sumX += pt.x;
+                sumY += pt.y;
+            }
+            Point center = new Point(sumX / points.Length, sumY / points.Length);
+            centers.Add(center);
+        }
+
+        // Debug.Log($"[MeasureGridSpacing] Measuring spacing from {centers.Count} sticker centers");
+
+        // Assume row-major ordering: centers are arranged as:
+        // [0] [1] [2]    row 0
+        // [3] [4] [5]    row 1  
+        // [6] [7] [8]    row 2
+
+        List<float> horizontalGaps = new List<float>();
+        List<float> verticalGaps = new List<float>();
+
+        // Measure horizontal gaps (within rows)
+        if (centers.Count >= 3)
+        {
+            // Row 0: gaps between centers 0-1 and 1-2
+            horizontalGaps.Add((float)Math.Abs(centers[1].x - centers[0].x));
+            if (centers.Count >= 3) horizontalGaps.Add((float)Math.Abs(centers[2].x - centers[1].x));
+        }
+        if (centers.Count >= 6)
+        {
+            // Row 1: gaps between centers 3-4 and 4-5
+            horizontalGaps.Add((float)Math.Abs(centers[4].x - centers[3].x));
+            if (centers.Count >= 6) horizontalGaps.Add((float)Math.Abs(centers[5].x - centers[4].x));
+        }
+        if (centers.Count >= 9)
+        {
+            // Row 2: gaps between centers 6-7 and 7-8  
+            horizontalGaps.Add((float)Math.Abs(centers[7].x - centers[6].x));
+            horizontalGaps.Add((float)Math.Abs(centers[8].x - centers[7].x));
+        }
+
+        // Measure vertical gaps (within columns)
+        if (centers.Count >= 4)
+        {
+            // Column 0: gap between centers 0-3
+            verticalGaps.Add((float)Math.Abs(centers[3].y - centers[0].y));
+            if (centers.Count >= 7) verticalGaps.Add((float)Math.Abs(centers[6].y - centers[3].y)); // 3-6
+        }
+        if (centers.Count >= 5)
+        {
+            // Column 1: gap between centers 1-4
+            verticalGaps.Add((float)Math.Abs(centers[4].y - centers[1].y));
+            if (centers.Count >= 8) verticalGaps.Add((float)Math.Abs(centers[7].y - centers[4].y)); // 4-7
+        }
+        if (centers.Count >= 6)
+        {
+            // Column 2: gap between centers 2-5
+            verticalGaps.Add((float)Math.Abs(centers[5].y - centers[2].y));
+            if (centers.Count >= 9) verticalGaps.Add((float)Math.Abs(centers[8].y - centers[5].y)); // 5-8
+        }
+
+        if (horizontalGaps.Count == 0 || verticalGaps.Count == 0)
+        {
+            Debug.LogWarning("[MeasureGridSpacing] Not enough gaps measured");
+            return (0f, 0f, false);
+        }
+
+        // Robust averaging: use median filtering
+        horizontalGaps.Sort();
+        verticalGaps.Sort();
+
+        float medianHorizontal = horizontalGaps[horizontalGaps.Count / 2];
+        float medianVertical = verticalGaps[verticalGaps.Count / 2];
+
+        // Filter outliers (>1.6× median)
+        List<float> filteredHorizontal = horizontalGaps.Where(gap => gap <= medianHorizontal * 1.6f).ToList();
+        List<float> filteredVertical = verticalGaps.Where(gap => gap <= medianVertical * 1.6f).ToList();
+
+        if (filteredHorizontal.Count == 0 || filteredVertical.Count == 0)
+        {
+            Debug.LogWarning("[MeasureGridSpacing] All gaps filtered out as outliers");
+            return (0f, 0f, false);
+        }
+
+        // Calculate final averages
+        float dx_px = filteredHorizontal.Average();
+        float dy_px = filteredVertical.Average();
+
+        // Check variance (stability)
+        float hVariance = filteredHorizontal.Count > 1 ?
+            filteredHorizontal.Select(x => (x - dx_px) * (x - dx_px)).Average() : 0f;
+        float vVariance = filteredVertical.Count > 1 ?
+            filteredVertical.Select(x => (x - dy_px) * (x - dy_px)).Average() : 0f;
+
+        float hStdDev = (float)Math.Sqrt(hVariance);
+        float vStdDev = (float)Math.Sqrt(vVariance);
+
+        float hCoefVar = dx_px > 0 ? hStdDev / dx_px : 1f; // Coefficient of variation
+        float vCoefVar = dy_px > 0 ? vStdDev / dy_px : 1f;
+
+        bool isStable = hCoefVar < maxDepthVariance && vCoefVar < maxDepthVariance;
+
+        // Debug.Log($"[MeasureGridSpacing] dx={dx_px:F1}px (cv={hCoefVar:F2}), dy={dy_px:F1}px (cv={vCoefVar:F2}), stable={isStable}");
+        // Debug.Log($"[MeasureGridSpacing] Raw gaps - H: [{string.Join(",", horizontalGaps.Select(x => x.ToString("F1")))}], " +
+                //  $"V: [{string.Join(",", verticalGaps.Select(x => x.ToString("F1")))}]");
+
+        return (dx_px, dy_px, isStable);
+    }
+
+    private (float depth, bool isValid) EstimateDepthFromGrid(List<MatOfPoint> sortedContours)
+    {
+        if (!intrinsicsInitialized)
+        {
+            Debug.LogWarning("[EstimateDepthFromGrid] Camera intrinsics not initialized");
+            return (smoothedDepth, false);
+        }
+
+        // Debug: Log camera intrinsics and cube size
+        // Debug.Log($"[EstimateDepthFromGrid] Camera intrinsics: fx={fx:F1}, fy={fy:F1}, cx={cx:F1}, cy={cy:F1}");
+        // Debug.Log($"[EstimateDepthFromGrid] Cube size from inspector: {cubeSize:F1}mm");
+
+        // Measure grid spacing
+        var (dx_px, dy_px, spacingValid) = MeasureGridSpacing(sortedContours);
+
+        if (!spacingValid || dx_px <= 0 || dy_px <= 0)
+        {
+            Debug.LogWarning("[EstimateDepthFromGrid] Invalid grid spacing measurement");
+            return (smoothedDepth, false);
+        }
+
+        // Physical gap between adjacent sticker centers (convert mm to meters)
+        float physicalGapMm = cubeSize / 3f; // Gap in millimeters
+        float physicalGapMeters = physicalGapMm / 1000f; // Convert to meters for depth calculation
+        // Debug.Log($"[EstimateDepthFromGrid] Physical gap: {cubeSize:F1}mm / 3 = {physicalGapMm:F1}mm = {physicalGapMeters:F6}m");
+
+        // Depth estimates from horizontal and vertical spacing
+        float Zx = fx * physicalGapMeters / dx_px;
+        float Zy = fy * physicalGapMeters / dy_px;
+
+        // Debug.Log($"[EstimateDepthFromGrid] Depth calculation: fx={fx:F1} * {physicalGapMeters:F6}m / {dx_px:F1}px = {Zx:F3}m");
+        // Debug.Log($"[EstimateDepthFromGrid] Depth calculation: fy={fy:F1} * {physicalGapMeters:F6}m / {dy_px:F1}px = {Zy:F3}m");
+
+        // Combine depth estimates
+        float estimatedDepth;
+        if (Zx > 0 && Zy > 0)
+        {
+            estimatedDepth = 0.5f * (Zx + Zy); // Average both estimates
+            // Debug.Log($"[EstimateDepthFromGrid] Combined depth estimate: Z={(estimatedDepth):F3}m");
+        }
+        else if (Zx > 0)
+        {
+            estimatedDepth = Zx;
+            // Debug.Log($"[EstimateDepthFromGrid] Using horizontal depth estimate: Z={estimatedDepth:F3}m");
+        }
+        else if (Zy > 0)
+        {
+            estimatedDepth = Zy;
+            // Debug.Log($"[EstimateDepthFromGrid] Using vertical depth estimate: Z={estimatedDepth:F3}m");
+        }
+        else
+        {
+            Debug.LogWarning("[EstimateDepthFromGrid] Both depth estimates invalid");
+            return (smoothedDepth, false);
+        }
+
+        // Sanity check: reasonable depth range
+        bool depthValid = estimatedDepth >= 0.15f && estimatedDepth <= 3.0f;
+
+        if (!depthValid)
+        {
+            Debug.LogWarning($"[EstimateDepthFromGrid] Depth {estimatedDepth:F3}m outside valid range [0.15, 3.0]m");
+            return (smoothedDepth, false);
+        }
+
+        // Debug.Log($"[EstimateDepthFromGrid] Valid depth estimate: {estimatedDepth:F3}m");
+        return (estimatedDepth, true);
+    }
+
+    private float ApplyDepthSmoothing(float newDepth)
+    {
+        if (!hasValidDepth)
+        {
+            // First valid depth - no smoothing needed
+            smoothedDepth = newDepth;
+            hasValidDepth = true;
+            // Debug.Log($"[ApplyDepthSmoothing] First valid depth: {smoothedDepth:F3}m");
+            return smoothedDepth;
+        }
+
+        // Apply exponential moving average (EMA)
+        float prevSmoothed = smoothedDepth;
+        smoothedDepth = smoothedDepth * depthSmoothing + newDepth * (1f - depthSmoothing);
+
+        // Debug.Log($"[ApplyDepthSmoothing] Smoothed depth: {prevSmoothed:F3}m → {smoothedDepth:F3}m (raw: {newDepth:F3}m)");
+        return smoothedDepth;
+    }
+
+    private Quaternion ComputeBillboardRotation(Vector3 worldPos, Camera cam)
+    {
+        // If billboard rotation is disabled, return current rotation or identity
+        if (!lockOrientationToCamera)
+        {
+            return centerAnchor != null ? centerAnchor.transform.rotation : lastWorldRot;
+        }
+
+        // Safety check for camera
+        if (cam == null)
+        {
+            Debug.LogWarning("[ComputeBillboardRotation] Camera is null, using current rotation");
+            return centerAnchor != null ? centerAnchor.transform.rotation : Quaternion.identity;
+        }
+
+        // Compute direction from world position to camera
+        Vector3 dir = (cam.transform.position - worldPos).normalized;
+
+        // Safety check for zero distance
+        if (dir.magnitude < 0.001f)
+        {
+            Debug.LogWarning("[ComputeBillboardRotation] Camera too close to anchor, using current rotation");
+            return centerAnchor != null ? centerAnchor.transform.rotation : Quaternion.identity;
+        }
+
+        // Choose up vector based on useCameraUp setting
+        Vector3 up = useCameraUp ? cam.transform.up : Vector3.up;
+
+        // Compute target rotation to face the camera
+        Quaternion targetRot = Quaternion.LookRotation(dir, up) * modelForwardAdjustment;
+
+        // Apply smoothing if enabled
+        if (rotationSmoothing > 0f && centerAnchor != null)
+        {
+            Quaternion currentRotation = centerAnchor.transform.rotation;
+            return Quaternion.Slerp(currentRotation, targetRot, 1f - rotationSmoothing);
+        }
+        else
+        {
+            return targetRot;
+        }
+    }
+
+    private bool TryComputeImageRowDirection(List<MatOfPoint> sortedContours, out Vector2 v_img)
+    {
+        v_img = Vector2.zero;
+
+        if (sortedContours.Count < 3)
+        {
+            return false; // Need at least 3 stickers for any row analysis
+        }
+
+        // Get sticker centers using existing CubeProcessor method
+        List<Vector2> centers = new List<Vector2>();
+        foreach (MatOfPoint contour in sortedContours)
+        {
+            Point center = CubeProcessor.ContourCenter(contour);
+            centers.Add(new Vector2((float)center.x, (float)center.y));
+        }
+
+        List<Vector2> rowDirs = new List<Vector2>();
+
+        // Analyze each potential row (0-2, 3-5, 6-8)
+        for (int row = 0; row < 3; row++)
+        {
+            int startIdx = row * 3;
+            int endIdx = startIdx + 2; // Index of rightmost sticker in row
+
+            // Check if we have enough stickers for this row
+            if (endIdx >= centers.Count)
+            {
+                // If we don't have the full row, try using what we have
+                if (startIdx + 1 < centers.Count)
+                {
+                    endIdx = startIdx + 1; // Use 2-point row direction
+                }
+                else
+                {
+                    continue; // Skip this row entirely
+                }
+            }
+
+            // Compute row direction vector (left to right)
+            Vector2 v_row = centers[endIdx] - centers[startIdx];
+
+            // Skip very small vectors (degenerate rows)
+            if (v_row.magnitude < 5f) // Minimum 5 pixels between stickers
+            {
+                continue;
+            }
+
+            // Normalize and add to list
+            rowDirs.Add(v_row.normalized);
+        }
+
+        // Check if we have enough valid rows
+        if (rowDirs.Count < minRowsForRoll)
+        {
+            return false;
+        }
+
+        // Outlier rejection by angle
+        List<float> angles = new List<float>();
+        foreach (Vector2 dir in rowDirs)
+        {
+            angles.Add(Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg);
+        }
+
+        // Compute circular median angle
+        angles.Sort();
+        float medianAngle = angles[angles.Count / 2];
+
+        // Filter outliers (more than 25° from median)
+        List<Vector2> filteredDirs = new List<Vector2>();
+        for (int i = 0; i < rowDirs.Count; i++)
+        {
+            float angleDiff = Mathf.Abs(Mathf.DeltaAngle(angles[i], medianAngle));
+            if (angleDiff <= 25f)
+            {
+                filteredDirs.Add(rowDirs[i]);
+            }
+        }
+
+        if (filteredDirs.Count == 0)
+        {
+            return false; // All directions were outliers
+        }
+
+        // Average remaining unit vectors and renormalize
+        Vector2 avgDir = Vector2.zero;
+        foreach (Vector2 dir in filteredDirs)
+        {
+            avgDir += dir;
+        }
+
+        v_img = avgDir.normalized;
+        return true;
+    }
+
+    private bool TryGetRollFromCentersDeg(List<MatOfPoint> sortedContours, out float rollDeg)
+    {
+        rollDeg = 0f;
+
+        // Get robust row direction from image analysis
+        if (!TryComputeImageRowDirection(sortedContours, out Vector2 v_img))
+        {
+            return false;
+        }
+
+        // Convert direction vector to angle in degrees
+        rollDeg = Mathf.Atan2(v_img.y, v_img.x) * Mathf.Rad2Deg;
+
+        // Apply invert flag if needed
+        if (invertRoll)
+        {
+            rollDeg = -rollDeg;
+        }
+
+        // Normalize to (-180, 180] range
+        while (rollDeg > 180f) rollDeg -= 360f;
+        while (rollDeg <= -180f) rollDeg += 360f;
+
+        return true;
+    }
+
+    void Update()
+    {
+        // FPS tracking for performance monitoring
+        fpsFrameCount++;
+        if (Time.time - fpsLastTime >= 1.0f)
+        {
+            float fps = fpsFrameCount / (Time.time - fpsLastTime);
+            // Debug.Log($"[CaptureGuide] Overall FPS: {fps:F1}");
+            fpsFrameCount = 0;
+            fpsLastTime = Time.time;
+        }
+
+        if (arCameraManager == null || hintText == null || isProcessing)
+            return;
+
+        // Frame rate limiting - process every Nth frame
+        frameCounter++;
+        if (frameCounter < frameSkipCount)
+            return;
+
+        frameCounter = 0;
+
+        // Time-based limiting - don't process more than 10 times per second
+        if (Time.time - lastProcessTime < 0.1f)
+            return;
+
+        ProcessCurrentFrame();
+    }
+
+    unsafe void ProcessCurrentFrame()
+    {
+        if (!arCameraManager.TryAcquireLatestCpuImage(out XRCpuImage cpuImage))
+        {
+            hintText.text = "Camera not ready";
+            return;
+        }
+
+        isProcessing = true;
+        lastProcessTime = Time.time;
+
+        try
+        {
+            using (cpuImage)
+            {
+                var conversionParams = new XRCpuImage.ConversionParams
+                {
+                    inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
+                    outputDimensions = new Vector2Int(cpuImage.width, cpuImage.height),
+                    outputFormat = TextureFormat.RGBA32,
+                    transformation = XRCpuImage.Transformation.MirrorX
+                };
+
+                int size = conversionParams.outputDimensions.x * conversionParams.outputDimensions.y * 4;
+                var data = new NativeArray<byte>(size, Allocator.Temp);
+                cpuImage.Convert(conversionParams, (System.IntPtr)data.GetUnsafePtr(), size);
+
+                frameTexture = new Texture2D(cpuImage.width, cpuImage.height, TextureFormat.RGBA32, false);
+                frameTexture.LoadRawTextureData(data);
+                frameTexture.Apply();
+                data.Dispose();
+
+                // Store CPU image dimensions for proper scaling calculation
+                cpuImageWidth = cpuImage.width;
+                cpuImageHeight = cpuImage.height;
+
+                // Log CPU image vs screen size for debugging boundary size mismatch
+                // Debug.Log($"[ProcessCurrentFrame] CPU Image size: {cpuImage.width}×{cpuImage.height}");
+                // Debug.Log($"[ProcessCurrentFrame] Screen size: {Screen.width}×{Screen.height}");
+                // Debug.Log($"[ProcessCurrentFrame] Texture size: {frameTexture.width}×{frameTexture.height}");
+            }
+
+            // Use 'using' to ensure frameMat is always disposed
+            using (Mat frameMat = new Mat(frameTexture.height, frameTexture.width, CvType.CV_8UC4))
+            {
+                OpenCVMatUtils.Texture2DToMat(frameTexture, frameMat);
+                Destroy(frameTexture);
+                TrackCube(frameMat);
+            } // frameMat automatically disposed here
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[CaptureGuide] Frame processing error: {ex.Message}");
+            UpdateTrackingStatus("Cube Not Found", false);
+        }
+        finally
+        {
+            isProcessing = false;
+        }
+    }
+
+    private void TrackCube(Mat inputMat)
+    {
+        // Use reusable processor for performance - eliminates per-frame allocation overhead
+        var processingStopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        // Apply adaptive threshold parameters from Unity Inspector
+        processor.MinAreaPercent = minStickerAreaPercent;
+        processor.MaxAreaPercent = maxStickerAreaPercent;
+
+        processor.UpdateInputMat(inputMat);
+        processor.ProcessImage(true);
+
+        processingStopwatch.Stop();
+
+        if (processor.SortedContours.Count >= 6 && processor.SortedContours.Count <= 9)
+        {
+            UpdateTrackingStatus($"Found {processor.SortedContours.Count} stickers ({processingStopwatch.ElapsedMilliseconds}ms)", true);
+
+            // Draw oriented boundary using sticker contours
+            DrawCubeBoundary(processor, true);
+        }
+        else
+        {
+            UpdateTrackingStatus($"Found {processor.SortedContours.Count} stickers ({processingStopwatch.ElapsedMilliseconds}ms)", false);
+
+            // Hide boundary when outside 6-9 range
+            DrawCubeBoundary(processor, false);
+        }
+    }
+
+    private void UpdateTrackingStatus(string message, bool isTracking)
+    {
+        if (hintText == null) return;
+
+        hintText.text = message;
+        hintText.color = isTracking ? Color.green : Color.red;
+    }
+
+    private void DrawCubeBoundary(CubeProcessor cubeProcessor, bool show)
+    {
+        // Debug.Log($"[DrawCubeBoundary] Called with {cubeProcessor.SortedContours.Count} contours, show={show}");
+
+        if (show)
+        {
+            // Good frame (6-9 stickers detected)
+            HandleGoodFrame(cubeProcessor);
+        }
+        else
+        {
+            // Bad frame (<6 or >9 stickers, or processing error)
+            HandleBadFrame();
+        }
+    }
+
+    private void HandleGoodFrame(CubeProcessor cubeProcessor)
+    {
+        if (centerAnchorPrefab == null)
+        {
+            Debug.LogWarning("[HandleGoodFrame] centerAnchorPrefab is not assigned! Please drag a cube prefab to centerAnchorPrefab field");
+            return;
+        }
+
+        if (cubeProcessor.SortedContours.Count == 0)
+        {
+            Debug.LogWarning("[HandleGoodFrame] No contours available for center calculation");
+            return;
+        }
+
+        try
+        {
+            // Get camera reference for coordinate conversion
+            Camera camera = Camera.main ?? arCameraManager.GetComponent<Camera>();
+            if (camera == null)
+            {
+                Debug.LogWarning("[HandleGoodFrame] No camera found for coordinate conversion");
+                return;
+            }
+
+            // Compute world center with depth estimation  
+            var (worldCenter, depthValid) = Get2DCentroidPositionWithDepth(cubeProcessor.SortedContours, camera);
+
+            // Compute billboard rotation to face camera
+            Quaternion billboardRot = ComputeBillboardRotation(worldCenter, camera);
+
+            // Apply twist tracking if enabled
+            Quaternion cubeRotation = billboardRot;
+            if (enableTwistTracking && TryGetRollFromCentersDeg(cubeProcessor.SortedContours, out float rollDeg))
+            {
+                // Unwrap against last value to avoid 180° jumps
+                if (hasRoll)
+                {
+                    float unwrappedRoll = rollDeg;
+                    float diff = rollDeg - rollDegSmoothed;
+
+                    // Handle wraparound
+                    if (diff > 180f) unwrappedRoll -= 360f;
+                    else if (diff < -180f) unwrappedRoll += 360f;
+
+                    rollDeg = unwrappedRoll;
+                }
+
+                // Clamp per-frame delta to prevent sudden jumps
+                if (hasRoll)
+                {
+                    float maxDelta = maxRollJumpPerFrame;
+                    float delta = rollDeg - rollDegSmoothed;
+                    delta = Mathf.Clamp(delta, -maxDelta, maxDelta);
+                    rollDeg = rollDegSmoothed + delta;
+                }
+
+                // Apply EMA smoothing
+                if (!hasRoll)
+                {
+                    rollDegSmoothed = rollDeg;
+                    hasRoll = true;
+                }
+                else
+                {
+                    rollDegSmoothed = Mathf.Lerp(rollDegSmoothed, rollDeg, 1f - rollSmoothing);
+                }
+
+                lastRollTime = Time.time;
+
+                // Apply twist about the view axis
+                Vector3 viewAxis = (camera.transform.position - worldCenter).normalized;
+                if (viewAxis.sqrMagnitude > 0.001f) // Safety check for zero distance
+                {
+                    Quaternion twist = Quaternion.AngleAxis(rollDegSmoothed, viewAxis);
+                    cubeRotation = twist * billboardRot;
+
+                    // Debug.Log($"[HandleGoodFrame] Roll: raw={rollDeg:F1}°, smoothed={rollDegSmoothed:F1}°, applied twist");
+                }
+                else
+                {
+                    Debug.LogWarning("[HandleGoodFrame] View axis too small, skipping twist");
+                }
+            }
+            else if (enableTwistTracking)
+            {
+                // Keep previous rollDegSmoothed (don't zero it mid-session)
+                // Debug.Log("[HandleGoodFrame] Twist tracking enabled but roll detection failed");
+            }
+
+            // If depth estimation fails, treat as bad frame (will trigger coast window)
+            if (!depthValid && hasValidDepth)
+            {
+                Debug.LogWarning("[HandleGoodFrame] Depth estimation failed, treating as bad frame");
+                HandleBadFrame();
+                return;
+            }
+
+            // Store last good pose for coast window
+            lastWorldPos = worldCenter;
+            lastWorldRot = cubeRotation;
+            lastSeenTime = Time.time;
+            hasLock = true;
+
+            // Ensure anchor active and update its transform
+            if (centerAnchor == null)
+            {
+                // CREATE ONCE on first detection
+                CreatePersistentAnchor(worldCenter, cubeRotation);
+            }
+            else
+            {
+                // UPDATE EVERY FRAME during tracking
+                UpdateAnchorTransform(worldCenter, cubeRotation);
+            }
+
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogError($"[HandleGoodFrame] Error updating center anchor: {ex.Message}");
+        }
+    }
+
+    private void HandleBadFrame()
+    {
+        if (hasLock && Time.time - lastSeenTime < coastDuration)
+        {
+            // Within coast window - keep anchor active with last good pose
+            if (centerAnchor != null)
+            {
+                centerAnchor.SetActive(true);
+                centerAnchor.transform.position = lastWorldPos;
+
+                // Handle rotation during coast window
+                Quaternion cubeRotation;
+                if (lockOrientationToCamera)
+                {
+                    // Recompute billboard rotation each frame to continue facing camera
+                    Camera camera = Camera.main ?? arCameraManager.GetComponent<Camera>();
+                    Quaternion billboardRot = ComputeBillboardRotation(lastWorldPos, camera);
+
+                    // Apply stored twist if twist tracking is enabled
+                    if (enableTwistTracking && hasRoll)
+                    {
+                        Vector3 viewAxis = (camera.transform.position - lastWorldPos).normalized;
+                        if (viewAxis.sqrMagnitude > 0.001f)
+                        {
+                            Quaternion twist = Quaternion.AngleAxis(rollDegSmoothed, viewAxis);
+                            cubeRotation = twist * billboardRot;
+                        }
+                        else
+                        {
+                            cubeRotation = billboardRot;
+                        }
+                    }
+                    else
+                    {
+                        cubeRotation = billboardRot;
+                    }
+                }
+                else
+                {
+                    // Use stored rotation (no billboard behavior)
+                    cubeRotation = lastWorldRot;
+                }
+
+                centerAnchor.transform.rotation = cubeRotation;
+
+                // Debug.Log($"[HandleBadFrame] Coasting with last pose: pos=({lastWorldPos.x:F3}, {lastWorldPos.y:F3}, {lastWorldPos.z:F3}), time_remaining={(coastDuration - (Time.time - lastSeenTime)):F2}s");
+            }
+        }
+        else
+        {
+            // Coast window expired or no lock - hide anchor and reset lock
+            if (centerAnchor != null)
+            {
+                centerAnchor.SetActive(false);
+                // Debug.Log("[HandleBadFrame] Coast window expired, hiding anchor");
+            }
+
+            // Reset hasLock only when coast window expires and anchor hidden
+            if (hasLock)
+            {
+                hasLock = false;
+                Debug.Log("[HandleBadFrame] Reset hasLock=false");
+            }
+        }
+    }
+
+    private Point CalculateStickerCentroid(List<MatOfPoint> sortedContours)
+    {
+        if (sortedContours.Count == 0)
+        {
+            Debug.LogWarning("[CalculateStickerCentroid] No contours provided, using center fallback");
+            return new Point(240, 320); // Center of 480×640 processing resolution
+        }
+
+        // Calculate centroid of all sticker centers
+        double totalX = 0, totalY = 0;
+        int totalStickers = 0;
+
+        foreach (MatOfPoint contour in sortedContours)
+        {
+            // Calculate centroid of each sticker
+            Point[] points = contour.toArray();
+            double stickerX = 0, stickerY = 0;
+
+            foreach (Point pt in points)
+            {
+                stickerX += pt.x;
+                stickerY += pt.y;
+            }
+
+            // Add this sticker's center to the overall centroid calculation
+            totalX += stickerX / points.Length;
+            totalY += stickerY / points.Length;
+            totalStickers++;
+        }
+
+        // Calculate final centroid
+        Point centroid = new Point(totalX / totalStickers, totalY / totalStickers);
+
+        // Debug.Log($"[CalculateStickerCentroid] Calculated centroid from {totalStickers} stickers: ({centroid.x:F1}, {centroid.y:F1})");
+
+        return centroid;
+    }
+
+    private (Vector3 worldCenter, bool depthValid) Get2DCentroidPositionWithDepth(List<MatOfPoint> sortedContours, Camera camera)
+    {
+        // Calculate centroid of all detected stickers
+        Point centroid = CalculateStickerCentroid(sortedContours);
+
+        // Debug.Log($"[Get2DCentroidPosition] Centroid in 480x640 space: ({centroid.x:F1}, {centroid.y:F1})");
+
+        // Transform centroid to screen space
+        Vector2 screenCenter = TransformCenterToScreenSpace(centroid);
+
+        // Debug.Log($"[Get2DCentroidPosition] Screen center: ({screenCenter.x:F1}, {screenCenter.y:F1})");
+
+        // Estimate depth from grid spacing
+        var (estimatedDepth, depthValid) = EstimateDepthFromGrid(sortedContours);
+        float anchorDepth;
+
+        if (depthValid)
+        {
+            // Use estimated depth with smoothing
+            anchorDepth = ApplyDepthSmoothing(estimatedDepth);
+            // Debug.Log($"[Get2DCentroidPosition] Using estimated depth: {anchorDepth:F3}m");
+        }
+        else
+        {
+            // Fallback to smoothed depth or default
+            anchorDepth = hasValidDepth ? smoothedDepth : 1.0f;
+            Debug.Log($"[Get2DCentroidPosition] Using fallback depth: {anchorDepth:F3}m (depthValid={depthValid}, hasValidDepth={hasValidDepth})");
+        }
+
+        // Convert 2D screen center to 3D world position
+        Vector3 screenPoint = new Vector3(screenCenter.x, screenCenter.y, anchorDepth);
+        Vector3 worldCenter = camera.ScreenToWorldPoint(screenPoint);
+
+        // Debug.Log($"[Get2DCentroidPosition] World center: {worldCenter} (depth: {anchorDepth:F3}m)");
+
+        return (worldCenter, depthValid);
+    }
+
+    private Vector2 TransformCenterToScreenSpace(Point center)
+    {
+        // Debug.Log($"[TransformCenter] CPU Image size: {cpuImageWidth} x {cpuImageHeight}");
+        // Debug.Log($"[TransformCenter] Screen size: {Screen.width} x {Screen.height}");
+        // Debug.Log($"[TransformCenter] Center in 480x640 space: ({center.x:F1}, {center.y:F1})");
+
+        // Calculate scale factors from processing resolution (480×640) to CPU image resolution  
+        float scaleX = (float)cpuImageWidth / 480f;
+        float scaleY = (float)cpuImageHeight / 640f;
+
+        // Debug.Log($"[TransformCenter] Scale factors (CPU based): X={scaleX:F2}, Y={scaleY:F2}");
+
+        // Scale from 480×640 to CPU image resolution
+        float scaledX = (float)center.x * scaleX;
+        float scaledY = (float)center.y * scaleY;
+
+        // Now convert from CPU image coordinates to screen coordinates
+        float cpuToScreenScaleX = (float)Screen.width / cpuImageWidth;
+        float cpuToScreenScaleY = (float)Screen.height / cpuImageHeight;
+
+        // Debug.Log($"[TransformCenter] CPU to Screen scale factors: X={cpuToScreenScaleX:F2}, Y={cpuToScreenScaleY:F2}");
+
+        // Apply CPU image to screen scaling
+        scaledX *= cpuToScreenScaleX;
+        scaledY *= cpuToScreenScaleY;
+
+        // Apply coordinate system conversion from OpenCV (Y-down) to Unity (Y-up)
+        float unityX = scaledX;
+        float unityY = Screen.height - scaledY; // Y-flip
+
+        // Apply calibration offset
+        unityX += coordinateOffset.x;
+        unityY += coordinateOffset.y;
+
+        // Clamp to screen bounds
+        unityX = Mathf.Clamp(unityX, 0, Screen.width);
+        unityY = Mathf.Clamp(unityY, 0, Screen.height);
+
+        // Debug.Log($"[TransformCenter] Final screen center: ({unityX:F1}, {unityY:F1})");
+
+        return new Vector2(unityX, unityY);
+    }
+
+    private void CreatePersistentAnchor(Vector3 position, Quaternion rotation)
+    {
+        if (centerAnchorPrefab == null)
+        {
+            Debug.LogWarning("[CreatePersistentAnchor] centerAnchorPrefab is not assigned! Please drag a cube prefab to centerAnchorPrefab field");
+            return;
+        }
+
+        // Create the anchor once at the initial position
+        centerAnchor = Instantiate(centerAnchorPrefab, position, rotation);
+
+        // Set up initial properties that won't change
+        centerAnchor.transform.localScale = Vector3.one * 0.08f; // 8cm cube for center anchor
+
+        // Create animated arrow as child of the anchor
+        CreateArrowChild();
+
+        // Create face occluder for depth testing
+        CreateFaceOccluderChild();
+
+    }
+
+    private void UpdateAnchorTransform(Vector3 position, Quaternion rotation)
+    {
+        if (centerAnchor == null)
+        {
+            Debug.LogWarning("[UpdateAnchorTransform] Anchor is null, cannot update transform");
+            return;
+        }
+
+        // Update position and rotation smoothly
+        centerAnchor.transform.position = position;
+        centerAnchor.transform.rotation = rotation;
+
+        // Ensure anchor is visible
+        if (!centerAnchor.activeInHierarchy)
+        {
+            centerAnchor.SetActive(true);
+        }
+
+        // Debug.Log($"[UpdateAnchorTransform] Updated anchor to position {position}, rotation {rotation}");
+    }
+
+
+    private void CreateArrowChild()
+    {
+        if (animatedArrowPrefab == null)
+        {
+            Debug.LogWarning("[CreateArrowChild] No animated arrow prefab assigned! Please drag an arrow prefab to the animatedArrowPrefab field.");
+            return;
+        }
+
+        if (centerAnchor == null)
+        {
+            Debug.LogWarning("[CreateArrowChild] No center anchor to attach arrow to.");
+            return;
+        }
+
+        // Clear any existing direction arrow
+        if (directionArrow != null)
+        {
+            Destroy(directionArrow);
+            directionArrow = null;
+        }
+
+        // Create the arrow at the anchor's position (will be offset via local position)
+        directionArrow = Instantiate(animatedArrowPrefab, centerAnchor.transform.position, centerAnchor.transform.rotation);
+
+        // Set as child of the anchor
+        directionArrow.transform.SetParent(centerAnchor.transform);
+
+        // Position the arrow 28cm above the anchor in world space (Y-axis)
+        directionArrow.transform.localPosition = new Vector3(0.0f, 0.85f, 0.0f); // 28cm = 0.28m
+        // directionArrow.transform.localPosition = Vector3.forward * 0.1f;
+
+        // Scale the arrow for better visibility
+        directionArrow.transform.localScale = new Vector3(0.12f, 0.06f, 0.2f);
+
+        // Debug arrow material and render queue
+        var arrowRenderer = directionArrow.GetComponent<Renderer>();
+        if (arrowRenderer != null)
+        {
+            Material arrowMaterial = arrowRenderer.material;
+            Debug.Log($"[ARROW DEBUG] Material: {arrowMaterial.name}, Queue: {arrowMaterial.renderQueue}");
+            Debug.Log($"[ARROW DEBUG] Shader: {arrowMaterial.shader.name}");
             
-//             // Use existing robust 9-sticker detection system
-//             processor = new CubeProcessor("");
-//             int stickerCount = processor.ProcessImageForCounting(inputMat);
+            // Check if it's in transparent queue (should be 3000+)
+            if (arrowMaterial.renderQueue < 3000)
+            {
+                Debug.LogWarning($"[ARROW DEBUG] Arrow render queue ({arrowMaterial.renderQueue}) is too low! Should be 3000+ for depth testing to work.");
+            }
             
-//             // Create debug visualization with contours for both saving and UI display
-//             Mat debugMat = null;
-//             if ((saveDebugImages || showDebugUI) && processor.Resized != null)
-//             {
-//                 debugMat = processor.Resized.clone();
+            // Log render queue category
+            string queueCategory = arrowMaterial.renderQueue < 2500 ? "Opaque" : 
+                                 arrowMaterial.renderQueue < 3000 ? "AlphaTest" : "Transparent";
+            Debug.Log($"[ARROW DEBUG] Render queue category: {queueCategory}");
+        }
+        else
+        {
+            Debug.LogError("[ARROW DEBUG] No renderer found on arrow!");
+        }
+
+        // Apply pending move if solver mode is enabled and we have a pending move
+        if (solverModeEnabled && !string.IsNullOrEmpty(pendingMove))
+        {
+            SetArrowForMove(pendingMove);
+        }
+    }
+
+    private void CreateFaceOccluderChild()
+    {
+        if (faceOccluderPrefab == null)
+        {
+            Debug.LogWarning("[CreateFaceOccluderChild] No face occluder prefab assigned! Please drag FaceOccluder.prefab to the faceOccluderPrefab field.");
+            return;
+        }
+
+        if (centerAnchor == null)
+        {
+            Debug.LogWarning("[CreateFaceOccluderChild] No center anchor to attach occluder to.");
+            return;
+        }
+
+        // Clear any existing face occluder
+        if (faceOccluder != null)
+        {
+            Destroy(faceOccluder);
+            faceOccluder = null;
+        }
+
+        // Instantiate occluder as child of centerAnchor
+        faceOccluder = Instantiate(faceOccluderPrefab, centerAnchor.transform.position, centerAnchor.transform.rotation);
+        faceOccluder.transform.SetParent(centerAnchor.transform);
+
+        // Calculate face size from cubeSize parameter (default 57mm)
+        float faceSizeM = cubeSize / 1000f; // Convert millimeters to meters
+        float finalScale = faceSizeM * occluderScale * 10;
+
+        // Position on front face (+Z) with epsilon push toward camera to prevent z-fighting
+        faceOccluder.transform.localPosition = new Vector3(0, 0, -0.4f);
+        faceOccluder.transform.localRotation = Quaternion.identity; // No rotation relative to anchor
+        faceOccluder.transform.localScale = Vector3.one * finalScale;
+        
+        // Debug scale calculations
+        Debug.Log($"[OCCLUDER DEBUG] Scale calculation: cubeSize={cubeSize}mm → faceSizeM={faceSizeM:F3}m → finalScale={finalScale:F3}m (occluderScale={occluderScale})");
+
+        // Configure renderer settings and verify material
+        var renderer = faceOccluder.GetComponent<Renderer>();
+        if (renderer != null)
+        {
+            // Check original material settings
+            Material material = renderer.material;
+            Debug.Log($"[OCCLUDER DEBUG] Original material: {material.name}, Queue: {material.renderQueue}");
+            
+            // Force render queue to 2000 for depth-only rendering
+            material.renderQueue = 2000;
+            
+            // Verify material settings
+            Debug.Log($"[OCCLUDER DEBUG] After queue set - Queue: {material.renderQueue}");
+            Debug.Log($"[OCCLUDER DEBUG] Material shader: {material.shader.name}");
+            
+            // Remove any collider that might have been added
+            var collider = faceOccluder.GetComponent<Collider>();
+            if (collider != null)
+            {
+                Destroy(collider);
+                Debug.Log("[OCCLUDER DEBUG] Removed MeshCollider from face occluder");
+            }
+        }
+        else
+        {
+            Debug.LogError("[OCCLUDER DEBUG] No renderer found on face occluder!");
+        }
+
+        // Log positioning details
+        Vector3 worldPos = faceOccluder.transform.position;
+        Vector3 localPos = faceOccluder.transform.localPosition;
+        Vector3 scale = faceOccluder.transform.localScale;
+        
+        Debug.Log($"[OCCLUDER DEBUG] World pos: {worldPos}, Local pos: {localPos}");
+        Debug.Log($"[OCCLUDER DEBUG] Scale: {scale}, Face size: {faceSizeM:F3}m, Occluder scale: {occluderScale}");
+    }
+
+    /// <summary>
+    /// Sets the arrow position and rotation to indicate a specific cube move.
+    /// Call this method when transitioning between solve steps.
+    /// </summary>
+    /// <param name="move">The cube notation (e.g., "U", "R'", "F2")</param>
+    public void SetArrowForMove(string move)
+    {
+        if (!solverModeEnabled)
+        {
+            Debug.LogWarning($"[SetArrowForMove] Solver mode not enabled. Enable solverModeEnabled to use move guidance.");
+            return;
+        }
+
+        if (directionArrow == null)
+        {
+            // Store the move for when arrow gets created
+            pendingMove = move;
+            return;
+        }
+
+        if (!moveMapping.ContainsKey(move))
+        {
+            Debug.LogWarning($"[SetArrowForMove] Unknown move '{move}'. Supported moves: U, U', U2, R, R', R2, F, F', F2, D, D', D2, L, L', L2, B, B', B2");
+            return;
+        }
+
+        var (position, eulerRotation) = moveMapping[move];
+        
+        // Check if this is a back face move that needs world space positioning
+        bool isBackMove = move.StartsWith("B");
+        
+        if (isBackMove)
+        {
+            // For back moves, calculate world position using camera direction
+            Camera camera = Camera.main ?? arCameraManager.GetComponent<Camera>();
+            if (camera != null)
+            {
+                // Use Z component as distance, position arrow behind cube relative to camera
+                float distance = Mathf.Abs(position.z);
+                Vector3 worldPosition = centerAnchor.transform.position - camera.transform.forward * -distance;
+                directionArrow.transform.position = worldPosition;
+            }
+            else
+            {
+                // Fallback to local positioning if no camera found
+                directionArrow.transform.localPosition = position;
+            }
+        }
+        else
+        {
+            // Use local positioning for all other moves (U, R, F, D, L)
+            directionArrow.transform.localPosition = position;
+        }
+        
+        directionArrow.transform.localRotation = Quaternion.Euler(eulerRotation);
+
+        // Debug transform hierarchy and positioning
+        Vector3 centerAnchorWorldPos = centerAnchor.transform.position;
+        Vector3 arrowLocalPos = directionArrow.transform.localPosition;
+        Vector3 arrowWorldPos = directionArrow.transform.position;
+        Quaternion centerAnchorRotation = centerAnchor.transform.rotation;
+        
+        Debug.Log($"[TRANSFORM DEBUG] CenterAnchor world pos: {centerAnchorWorldPos}");
+        Debug.Log($"[TRANSFORM DEBUG] CenterAnchor rotation: {centerAnchorRotation.eulerAngles}");
+        Debug.Log($"[TRANSFORM DEBUG] Arrow local pos set to: {position}");
+        Debug.Log($"[TRANSFORM DEBUG] Arrow local pos actual: {arrowLocalPos}");
+        Debug.Log($"[TRANSFORM DEBUG] Arrow world pos result: {arrowWorldPos}");
+        
+        // Calculate expected world position manually
+        Vector3 expectedWorldPos = centerAnchor.transform.TransformPoint(position);
+        Vector3 positionDiff = arrowWorldPos - expectedWorldPos;
+        
+        Debug.Log($"[TRANSFORM DEBUG] Expected world pos: {expectedWorldPos}");
+        Debug.Log($"[TRANSFORM DEBUG] Position difference: {positionDiff}");
+        
+        // Debug positioning relative to occluder
+        if (faceOccluder != null)
+        {
+            Vector3 occluderWorldPos = faceOccluder.transform.position;
+            float deltaZ = arrowWorldPos.z - occluderWorldPos.z;
+            float expectedDeltaZ = expectedWorldPos.z - occluderWorldPos.z;
+            
+            string depthStatus = deltaZ < -0.01f ? "BEHIND (should be hidden)" : 
+                               deltaZ > 0.01f ? "IN FRONT (should be visible)" : "AT SAME DEPTH";
+            
+            Debug.Log($"[MOVE DEBUG] '{move}' - Arrow Z: {arrowWorldPos.z:F3}, Occluder Z: {occluderWorldPos.z:F3}");
+            Debug.Log($"[MOVE DEBUG] Delta Z: actual={deltaZ:F3}, expected={expectedDeltaZ:F3} - {depthStatus}");
+            
+            // Additional face occluder debug information
+            Vector3 occluderLocalPos = faceOccluder.transform.localPosition;
+            Vector3 occluderLocalScale = faceOccluder.transform.localScale;
+            Quaternion occluderLocalRot = faceOccluder.transform.localRotation;
+            
+            Debug.Log($"[OCCLUDER DEBUG] World pos: {occluderWorldPos}");
+            Debug.Log($"[OCCLUDER DEBUG] Local pos: {occluderLocalPos} (relative to centerAnchor)");
+            Debug.Log($"[OCCLUDER DEBUG] Local scale: {occluderLocalScale}");
+            Debug.Log($"[OCCLUDER DEBUG] Local rotation: {occluderLocalRot.eulerAngles}");
+            
+            // Camera distance context
+            Camera camera = Camera.main ?? arCameraManager.GetComponent<Camera>();
+            if (camera != null)
+            {
+                float cameraToOccluder = Vector3.Distance(camera.transform.position, occluderWorldPos);
+                float cameraToArrow = Vector3.Distance(camera.transform.position, arrowWorldPos);
+                float cameraToAnchor = Vector3.Distance(camera.transform.position, centerAnchor.transform.position);
                 
-//                 // Draw all detected contours in green
-//                 if (processor.SquareContours != null && processor.SquareContours.Count > 0)
-//                 {
-//                     Imgproc.drawContours(debugMat, processor.SquareContours, -1, new Scalar(0, 255, 0), 2);
-//                 }
-                
-//                 // Draw rejected contours in red
-//                 if (processor.RejectedContours != null && processor.RejectedContours.Count > 0)
-//                 {
-//                     Imgproc.drawContours(debugMat, processor.RejectedContours, -1, new Scalar(0, 0, 255), 1);
-//                 }
-                
-//                 // Draw sorted contours (final result) in blue with numbers
-//                 if (processor.SortedContours != null && processor.SortedContours.Count > 0)
-//                 {
-//                     for (int i = 0; i < processor.SortedContours.Count; i++)
-//                     {
-//                         Point center = CubeProcessor.ContourCenter(processor.SortedContours[i]);
-//                         Imgproc.circle(debugMat, center, 10, new Scalar(255, 0, 0), -1);
-//                         Imgproc.putText(debugMat, i.ToString(), center, Imgproc.FONT_HERSHEY_SIMPLEX, 1, new Scalar(255, 255, 255), 2);
-//                     }
-//                 }
-                
-//                 // Save debug images if enabled
-//                 if (saveDebugImages)
-//                 {
-//                     SaveDebugImage(processor.Resized, $"processed_frame_{debugFrameCounter}");
-//                     SaveDebugImage(debugMat, $"contours_frame_{debugFrameCounter}");
-//                 }
-//             }
-            
-//             // Update real-time debug display
-//             if (showDebugUI)
-//             {
-//                 UpdateDebugDisplay(processor?.Resized, debugMat);
-//             }
-            
-//             // Clean up debug mat
-//             if (debugMat != null)
-//             {
-//                 debugMat.Dispose();
-//             }
-            
-//             // Log detailed processing results
-//             Debug.Log($"[CaptureGuide] Frame {debugFrameCounter}: Detected {stickerCount} stickers");
-//             Debug.Log($"  Initial contours: {processor.SquareContours?.Count ?? 0}");
-//             Debug.Log($"  Rejected contours: {processor.RejectedContours?.Count ?? 0}");
-//             Debug.Log($"  Recovered contours: {processor.RecoveredContours?.Count ?? 0}");
-            
-//             if (stickerCount == 9)
-//             {
-//                 // Extract face corners from the 9 detected stickers
-//                 Point[] faceCorners = ExtractFaceCornersFromStickers(processor);
-                
-//                 if (faceCorners != null && faceCorners.Length == 4)
-//                 {
-//                     // Estimate 3D pose using extrapolated face boundary
-//                     Vector3 facePosition;
-//                     Quaternion faceRotation;
-                    
-//                     if (EstimateFacePose(faceCorners, out facePosition, out faceRotation))
-//                     {
-//                         // Update wireframe visualization
-                        
-//                         isCubeTracked = true;
-//                         UpdateTrackingStatus($"Tracking 9/9 stickers - Cube face locked!", true);
-                        
-//                         if (showDebugInfo)
-//                         {
-//                             Debug.Log($"[CaptureGuide] Face tracked from 9 stickers at position: {facePosition}, rotation: {faceRotation.eulerAngles}");
-//                         }
-//                     }
-//                     else
-//                     {
-//                         isCubeTracked = false;
-//                         UpdateTrackingStatus("Pose estimation failed", false);
-//                     }
-//                 }
-//                 else
-//                 {
-//                     isCubeTracked = false;
-//                     UpdateTrackingStatus("Face boundary extraction failed", false);
-//                 }
-//             }
-//             else
-//             {
-//                 isCubeTracked = false;
-                
-//                 // Log processing pipeline details for troubleshooting
-//                 if (showDebugInfo)
-//                 {
-//                     if (processor?.SquareContours != null && processor.SquareContours.Count == 0)
-//                     {
-//                         Debug.LogWarning($"[CaptureGuide] No contours detected at all - possible edge detection failure");
-//                     }
-//                     else if (processor?.SquareContours != null && processor.SquareContours.Count < stickerCount)
-//                     {
-//                         Debug.LogWarning($"[CaptureGuide] Contour mismatch: {processor.SquareContours.Count} contours but {stickerCount} final stickers");
-//                     }
-//                 }
-                
-//                 // Provide helpful feedback based on sticker count
-//                 if (stickerCount == 0)
-//                 {
-//                     if (processor?.SquareContours?.Count > 0)
-//                         UpdateTrackingStatus($"Found {processor.SquareContours.Count} shapes but no valid stickers", false);
-//                     else
-//                         UpdateTrackingStatus("No stickers detected - point at cube", false);
-//                 }
-//                 else if (stickerCount < 6)
-//                     UpdateTrackingStatus($"Detected {stickerCount}/9 stickers - move closer", false);
-//                 else if (stickerCount < 9)
-//                     UpdateTrackingStatus($"Detected {stickerCount}/9 stickers - better lighting needed", false);
-//                 else
-//                     UpdateTrackingStatus($"Too many stickers detected ({stickerCount}) - check lighting", false);
-//             }
-//         }
-//         catch (Exception ex)
-//         {
-//             Debug.LogWarning($"[CaptureGuide] Tracking error: {ex.Message}");
-//             UpdateTrackingStatus("Tracking error", false);
-//         }
-//         finally
-//         {
-//             // Clean up processor resources
-//             if (processor?.Resized != null)
-//             {
-//                 processor.Resized.Dispose();
-//             }
-//         }
-//     }
+                Debug.Log($"[OCCLUDER DEBUG] Distance from camera: Occluder={cameraToOccluder:F3}m, Arrow={cameraToArrow:F3}m, Anchor={cameraToAnchor:F3}m");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("[MOVE DEBUG] No face occluder exists for depth comparison!");
+        }
 
-//     private Point[] ExtractFaceCornersFromStickers(CubeProcessor processor)
-//     {
-//         try
-//         {
-//             if (processor.SortedContours.Count != 9)
-//             {
-//                 Debug.LogWarning($"[CaptureGuide] Expected 9 stickers but got {processor.SortedContours.Count}");
-//                 return null;
-//             }
-            
-//             // Get center points of all 9 stickers (sorted in row-major order)
-//             Point[] stickerCenters = new Point[9];
-//             for (int i = 0; i < 9; i++)
-//             {
-//                 stickerCenters[i] = CubeProcessor.ContourCenter(processor.SortedContours[i]);
-//             }
-            
-//             // Log sticker positions for debugging
-//             if (showDebugInfo)
-//             {
-//                 Debug.Log("[CaptureGuide] Sticker grid positions:");
-//                 for (int i = 0; i < 9; i++)
-//                 {
-//                     Debug.Log($"  Sticker {i}: ({stickerCenters[i].x:F1}, {stickerCenters[i].y:F1})");
-//                 }
-//             }
-            
-//             // Extract corner stickers from 3x3 grid:
-//             // 0 1 2
-//             // 3 4 5  
-//             // 6 7 8
-//             Point[] cornerStickers = {
-//                 stickerCenters[0], // top-left
-//                 stickerCenters[2], // top-right
-//                 stickerCenters[8], // bottom-right  
-//                 stickerCenters[6]  // bottom-left
-//             };
-            
-//             // Extrapolate face boundary beyond sticker centers
-//             Point[] faceBoundary = ExtrapolateFaceBoundary(cornerStickers);
-            
-//             if (showDebugInfo && faceBoundary != null)
-//             {
-//                 Debug.Log("[CaptureGuide] Extrapolated face boundary:");
-//                 for (int i = 0; i < 4; i++)
-//                 {
-//                     Debug.Log($"  Corner {i}: ({faceBoundary[i].x:F1}, {faceBoundary[i].y:F1})");
-//                 }
-//             }
-            
-//             return faceBoundary;
-//         }
-//         catch (Exception ex)
-//         {
-//             Debug.LogWarning($"[CaptureGuide] Face corner extraction error: {ex.Message}");
-//             return null;
-//         }
-//     }
-    
-//     private Point[] ExtrapolateFaceBoundary(Point[] cornerStickers)
-//     {
-//         try
-//         {
-//             if (cornerStickers.Length != 4) return null;
-            
-//             // Calculate sticker spacing from 3x3 grid layout
-//             // Top edge spacing: top-right - top-left  
-//             double topSpacingX = cornerStickers[1].x - cornerStickers[0].x;
-//             // Bottom edge spacing: bottom-right - bottom-left
-//             double bottomSpacingX = cornerStickers[2].x - cornerStickers[3].x;
-//             // Average horizontal spacing between corner stickers (spans 2 sticker gaps)
-//             double avgHorizontalSpacing = (topSpacingX + bottomSpacingX) / 2.0;
-            
-//             // Left edge spacing: bottom-left - top-left
-//             double leftSpacingY = cornerStickers[3].y - cornerStickers[0].y;
-//             // Right edge spacing: bottom-right - top-right  
-//             double rightSpacingY = cornerStickers[2].y - cornerStickers[1].y;
-//             // Average vertical spacing between corner stickers (spans 2 sticker gaps)
-//             double avgVerticalSpacing = (leftSpacingY + rightSpacingY) / 2.0;
-            
-//             // Calculate individual sticker spacing (corner-to-corner spans 2 gaps)
-//             double stickerSpacingX = avgHorizontalSpacing / 2.0;
-//             double stickerSpacingY = avgVerticalSpacing / 2.0;
-            
-//             // Extrapolation factor: extend beyond sticker center by ~0.6 sticker spacing 
-//             // This should reach approximately to the cube face edge
-//             double extrapolationFactor = 0.6;
-//             double dx = stickerSpacingX * extrapolationFactor;
-//             double dy = stickerSpacingY * extrapolationFactor;
-            
-//             // Create face boundary points by extending outward from corner stickers
-//             Point[] faceBoundary = {
-//                 new Point(cornerStickers[0].x - dx, cornerStickers[0].y - dy), // top-left face corner
-//                 new Point(cornerStickers[1].x + dx, cornerStickers[1].y - dy), // top-right face corner  
-//                 new Point(cornerStickers[2].x + dx, cornerStickers[2].y + dy), // bottom-right face corner
-//                 new Point(cornerStickers[3].x - dx, cornerStickers[3].y + dy)  // bottom-left face corner
-//             };
-            
-//             // Validate that result forms reasonable square shape
-//             if (!IsExtrapolatedBoundaryValid(faceBoundary, stickerSpacingX, stickerSpacingY))
-//             {
-//                 Debug.LogWarning("[CaptureGuide] Extrapolated boundary failed validation");
-//                 return null;
-//             }
-            
-//             return faceBoundary;
-//         }
-//         catch (Exception ex)
-//         {
-//             Debug.LogWarning($"[CaptureGuide] Face boundary extrapolation error: {ex.Message}");
-//             return null;
-//         }
-//     }
-    
-//     private bool IsExtrapolatedBoundaryValid(Point[] boundary, double expectedSpacingX, double expectedSpacingY)
-//     {
-//         if (boundary.Length != 4) return false;
-        
-//         try
-//         {
-//             // Calculate face dimensions from extrapolated boundary
-//             double faceWidth = (boundary[1].x - boundary[0].x + boundary[2].x - boundary[3].x) / 2.0;
-//             double faceHeight = (boundary[3].y - boundary[0].y + boundary[2].y - boundary[1].y) / 2.0;
-            
-//             // Expected face dimensions: 3 stickers + 2*extrapolation
-//             double expectedWidth = expectedSpacingX * 2.0 + 2 * (expectedSpacingX * 0.6);
-//             double expectedHeight = expectedSpacingY * 2.0 + 2 * (expectedSpacingY * 0.6);
-            
-//             // Check if dimensions are within reasonable range (±50% tolerance)
-//             double widthRatio = Math.Abs(faceWidth - expectedWidth) / expectedWidth;
-//             double heightRatio = Math.Abs(faceHeight - expectedHeight) / expectedHeight;
-            
-//             bool isValid = widthRatio < 0.5 && heightRatio < 0.5;
-            
-//             if (showDebugInfo)
-//             {
-//                 Debug.Log($"[CaptureGuide] Boundary validation - Width: {faceWidth:F1} (expected {expectedWidth:F1}, ratio {widthRatio:F2}), Height: {faceHeight:F1} (expected {expectedHeight:F1}, ratio {heightRatio:F2}), Valid: {isValid}");
-//             }
-            
-//             return isValid;
-//         }
-//         catch (Exception ex)
-//         {
-//             Debug.LogWarning($"[CaptureGuide] Boundary validation error: {ex.Message}");
-//             return false;
-//         }
-//     }
-    
-//     private bool EstimateFacePose(Point[] imageCorners, out Vector3 position, out Quaternion rotation)
-//     {
-//         position = Vector3.zero;
-//         rotation = Quaternion.identity;
-        
-//         try
-//         {
-//             // Create MatOfPoint3f for 3D object points
-//             MatOfPoint3f objectPoints = new MatOfPoint3f();
-//             objectPoints.fromArray(FACE_3D_POINTS);
-            
-//             // Create MatOfPoint2f for 2D image points
-//             MatOfPoint2f imagePoints = new MatOfPoint2f();
-//             imagePoints.fromArray(imageCorners);
-            
-//             // Solve PnP to get pose
-//             Mat rvec = new Mat();
-//             Mat tvec = new Mat();
-            
-//             // Create MatOfDouble for distortion coefficients
-//             MatOfDouble distCoeffsMat = new MatOfDouble();
-//             distCoeffsMat.fromArray(new double[] {0, 0, 0, 0});
-            
-//             bool success = Calib3d.solvePnP(objectPoints, imagePoints, cameraMatrix, distCoeffsMat, rvec, tvec);
-            
-//             distCoeffsMat.Dispose();
-            
-//             if (success)
-//             {
-//                 // Convert OpenCV pose to Unity coordinates
-//                 double[] tvecArray = new double[3];
-//                 double[] rvecArray = new double[3];
-//                 tvec.get(0, 0, tvecArray);
-//                 rvec.get(0, 0, rvecArray);
-                
-//                 // Convert to Unity coordinate system
-//                 position = new Vector3((float)tvecArray[0], -(float)tvecArray[1], (float)tvecArray[2]);
-//                 rotation = OpenCVARUtils.ConvertRvecToRot(rvecArray);
-                
-//                 // Transform to Unity's coordinate system (OpenCV uses right-handed, Unity uses left-handed)
-//                 position.z = -position.z;
-//                 rotation = new Quaternion(-rotation.x, rotation.y, -rotation.z, rotation.w);
-//             }
-            
-//             // Clean up
-//             objectPoints.Dispose();
-//             imagePoints.Dispose();
-//             rvec.Dispose();
-//             tvec.Dispose();
-            
-//             return success;
-//         }
-//         catch (Exception ex)
-//         {
-//             Debug.LogWarning($"[CaptureGuide] Pose estimation error: {ex.Message}");
-//             return false;
-//         }
-//     }
-    
-//     private void UpdateTrackingStatus(string message, bool isTracking)
-//     {
-//         if (hintText == null) return;
-        
-//         hintText.text = message;
-//         hintText.color = isTracking ? Color.green : Color.red;
-        
-//         if (showDebugInfo)
-//         {
-//             Debug.Log($"[CaptureGuide] {message}");
-//         }
-//     }
+        // Clear any pending move since we successfully applied this one
+        pendingMove = null;
+    }
 
-//     private void SaveDebugImage(Mat mat, string filename)
-//     {
-//         try
-//         {
-//             string debugPath = Path.Combine(Application.persistentDataPath, "debug");
-//             if (!Directory.Exists(debugPath))
-//                 Directory.CreateDirectory(debugPath);
-            
-//             string fullPath = Path.Combine(debugPath, $"{filename}.jpg");
-//             Imgcodecs.imwrite(fullPath, mat);
-//             Debug.Log($"[CaptureGuide] Saved debug image: {fullPath}");
-//         }
-//         catch (Exception ex)
-//         {
-//             Debug.LogWarning($"[CaptureGuide] Failed to save debug image: {ex.Message}");
-//         }
-//     }
-    
-//     private Texture2D ConvertMatToTexture(Mat mat)
-//     {
-//         try
-//         {
-//             if (mat == null || mat.empty())
-//             {
-//                 Debug.LogWarning("[CaptureGuide] Cannot convert null or empty Mat to texture");
-//                 return null;
-//             }
-            
-//             // Ensure Mat is in correct format (BGR for OpenCV to Unity conversion)
-//             Mat displayMat = new Mat();
-//             if (mat.channels() == 3)
-//             {
-//                 // Convert BGR to RGB for Unity display
-//                 Imgproc.cvtColor(mat, displayMat, Imgproc.COLOR_BGR2RGB);
-//             }
-//             else if (mat.channels() == 1)
-//             {
-//                 // Convert grayscale to RGB
-//                 Imgproc.cvtColor(mat, displayMat, Imgproc.COLOR_GRAY2RGB);
-//             }
-//             else
-//             {
-//                 Debug.LogWarning($"[CaptureGuide] Unsupported Mat format: {mat.channels()} channels");
-//                 return null;
-//             }
-            
-//             // Fix rotation issue - rotate by 90 degrees clockwise to match expected orientation
-//             Mat rotatedMat = new Mat();
-//             Core.rotate(displayMat, rotatedMat, Core.ROTATE_90_CLOCKWISE);
-//             displayMat.Dispose();
-            
-//             // Create texture with rotated dimensions
-//             Texture2D texture = new Texture2D(rotatedMat.cols(), rotatedMat.rows(), TextureFormat.RGB24, false);
-//             OpenCVMatUtils.MatToTexture2D(rotatedMat, texture);
-            
-//             rotatedMat.Dispose();
-//             return texture;
-//         }
-//         catch (Exception ex)
-//         {
-//             Debug.LogWarning($"[CaptureGuide] Mat to texture conversion error: {ex.Message}");
-//             return null;
-//         }
-//     }
-    
-//     private void UpdateDebugDisplay(Mat inputMat, Mat contourMat = null)
-//     {
-//         if (!showDebugUI) return;
-        
-//         // Limit debug display updates to ~5 FPS for performance
-//         if (Time.time - lastDebugUpdateTime < 0.2f) return;
-//         lastDebugUpdateTime = Time.time;
-        
-//         try
-//         {
-//             // Update input frame display
-//             if (debugImage != null && inputMat != null)
-//             {
-//                 Texture2D inputTexture = ConvertMatToTexture(inputMat);
-//                 if (inputTexture != null)
-//                 {
-//                     // Clean up previous texture
-//                     if (debugImage.texture != null)
-//                         DestroyImmediate(debugImage.texture);
-                    
-//                     debugImage.texture = inputTexture;
-//                     debugImage.SetNativeSize();
-//                 }
-//             }
-            
-//             // Update contour visualization display
-//             if (debugImage1 != null && contourMat != null)
-//             {
-//                 Texture2D contourTexture = ConvertMatToTexture(contourMat);
-//                 if (contourTexture != null)
-//                 {
-//                     // Clean up previous texture
-//                     if (debugImage1.texture != null)
-//                         DestroyImmediate(debugImage1.texture);
-                    
-//                     debugImage1.texture = contourTexture;
-//                     debugImage1.SetNativeSize();
-//                 }
-//             }
-//         }
-//         catch (Exception ex)
-//         {
-//             Debug.LogWarning($"[CaptureGuide] Debug display update error: {ex.Message}");
-//         }
-//     }
-    
-//     private bool ValidateFrameQuality(Mat mat)
-//     {
-//         try
-//         {
-//             // Check basic properties
-//             if (mat == null || mat.empty())
-//             {
-//                 Debug.LogWarning("[CaptureGuide] Frame validation failed: Mat is null or empty");
-//                 return false;
-//             }
-            
-//             // Check dimensions
-//             if (mat.rows() < 100 || mat.cols() < 100)
-//             {
-//                 Debug.LogWarning($"[CaptureGuide] Frame validation failed: Too small ({mat.cols()}x{mat.rows()})");
-//                 return false;
-//             }
-            
-//             // Check for reasonable contrast by computing standard deviation
-//             Mat grayMat = new Mat();
-//             if (mat.channels() == 3)
-//             {
-//                 Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_BGR2GRAY);
-//             }
-//             else if (mat.channels() == 1)
-//             {
-//                 grayMat = mat.clone();
-//             }
-//             else
-//             {
-//                 Debug.LogWarning($"[CaptureGuide] Frame validation failed: Unexpected channel count ({mat.channels()})");
-//                 return false;
-//             }
-            
-//             // Calculate mean and standard deviation
-//             Scalar meanScalar = Core.mean(grayMat);
-//             double mean = meanScalar.val[0];
-            
-//             // Calculate standard deviation manually
-//             Mat meanMat = new Mat(grayMat.size(), grayMat.type(), meanScalar);
-//             Mat diffMat = new Mat();
-//             Core.absdiff(grayMat, meanMat, diffMat);
-//             Core.multiply(diffMat, diffMat, diffMat);
-//             Scalar varianceScalar = Core.mean(diffMat);
-//             double stdDev = Math.Sqrt(varianceScalar.val[0]);
-            
-//             // Clean up
-//             grayMat.Dispose();
-//             meanMat.Dispose();
-//             diffMat.Dispose();
-            
-//             // Check for reasonable contrast (std deviation should be > 15 for good edge detection)
-//             if (stdDev < 10)
-//             {
-//                 Debug.LogWarning($"[CaptureGuide] Frame validation failed: Low contrast (std dev: {stdDev:F1})");
-//                 return false;
-//             }
-            
-//             // Check for reasonable brightness (not too dark or too bright)
-//             if (mean < 20 || mean > 235)
-//             {
-//                 Debug.LogWarning($"[CaptureGuide] Frame validation failed: Extreme brightness (mean: {mean:F1})");
-//                 return false;
-//             }
-            
-//             if (showDebugInfo)
-//             {
-//                 Debug.Log($"[CaptureGuide] Frame quality: mean={mean:F1}, std={stdDev:F1} ✓");
-//             }
-            
-//             return true;
-//         }
-//         catch (Exception ex)
-//         {
-//             Debug.LogWarning($"[CaptureGuide] Frame validation error: {ex.Message}");
-//             return false;
-//         }
-//     }
 
-//     void OnDestroy()
-//     {
-//         // Clean up OpenCV resources
-//         if (cameraMatrix != null)
-//         {
-//             cameraMatrix.Dispose();
-//         }
-//         if (distCoeffs != null)
-//         {
-//             distCoeffs.Dispose();
-//         }
-        
-//         // Clean up debug textures
-//         if (debugImage != null && debugImage.texture != null)
-//         {
-//             DestroyImmediate(debugImage.texture);
-//         }
-//         if (debugImage1 != null && debugImage1.texture != null)
-//         {
-//             DestroyImmediate(debugImage1.texture);
-//         }
-        
-//         Debug.Log("[CaptureGuide] Cleanup complete");
-//     }
-// }
+    private void ClearCenterAnchor()
+    {
+        if (centerAnchor != null)
+        {
+            Destroy(centerAnchor);
+            centerAnchor = null;
+        }
+
+        if (directionArrow != null)
+        {
+            Destroy(directionArrow);
+            directionArrow = null;
+        }
+
+        if (faceOccluder != null)
+        {
+            Destroy(faceOccluder);
+            faceOccluder = null;
+        }
+    }
+
+    public void ResetTracking()
+    {
+        ClearCenterAnchor();
+    }
+
+    void OnDestroy()
+    {
+        // Clean up reusable processor
+        processor?.Dispose();
+        processor = null;
+
+        // Clean up center anchor
+        ClearCenterAnchor();
+
+        Debug.Log("[CaptureGuide] Cleaned up reusable processor and center anchor");
+    }
+
+}

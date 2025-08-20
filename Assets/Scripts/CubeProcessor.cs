@@ -8,7 +8,7 @@ using OpenCVForUnity.CoreModule;
 using OpenCVForUnity.ImgcodecsModule;
 using OpenCVForUnity.ImgprocModule;
 
-public class CubeProcessor
+public class CubeProcessor : IDisposable
 {
     public readonly string ImagePath; // Nullable for Mat-based construction
     public Mat Image;                 // original BGR
@@ -18,6 +18,10 @@ public class CubeProcessor
     public readonly List<MatOfPoint> RecoveredContours = new();  // Contours recovered during processing
     public readonly List<Vector3> MeanLabValues = new();  // LAB color values for each sticker
     public Vector4 Boundary;          // (minX, minY, maxX, maxY) cube boundary
+    
+    // Adaptive threshold parameters for scale-independent detection
+    public float MinAreaPercent = 0.0008f;  // Minimum sticker area as % of image (0.08%)
+    public float MaxAreaPercent = 0.08f;    // Maximum sticker area as % of image (8%)
 
     private static readonly string[] FaceKeys = { "U", "R", "F", "D", "L", "B" };
 
@@ -39,20 +43,60 @@ public class CubeProcessor
         return faces;    // expect Count == 6 after all captures
     }
 
+    // Parameterless constructor for reusable instances
+    public CubeProcessor()
+    {
+        ImagePath = null;
+        Image = null;
+        Resized = new Mat();
+        // Don't initialize until UpdateInputMat is called
+    }
+
     public CubeProcessor(string imagePath)
     {
         ImagePath = imagePath;
         Image = Imgcodecs.imread(ImagePath, Imgcodecs.IMREAD_COLOR);
         Resized = new Mat();
+        Core.rotate(Image, Image, Core.ROTATE_90_CLOCKWISE);
         Imgproc.resize(Image, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
+        Image.Dispose();
     }
-    
+
     public CubeProcessor(Mat inputMat)
     {
         ImagePath = null; // No file path for Mat-based construction
-        Image = inputMat.clone(); // Store original Mat
+        Core.rotate(inputMat, inputMat, Core.ROTATE_90_CLOCKWISE);
+        Image = inputMat; // Store original Mat
         Resized = new Mat();
         Imgproc.resize(Image, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
+        // Resized = Image.clone();
+        Image.Dispose();
+    }
+    
+    // Update reusable instance with new input Mat
+    public void UpdateInputMat(Mat inputMat)
+    {
+        // Clear previous state
+        ClearProcessingState();
+
+        // Set new input - don't store reference to avoid disposal issues
+        // Process directly into Resized Mat
+        Core.rotate(inputMat, inputMat, Core.ROTATE_90_CLOCKWISE);
+
+        Imgproc.resize(inputMat, Resized, new Size(480, 640), 0, 0, Imgproc.INTER_AREA);
+        // Resized = inputMat;
+        Image = null; // No reference to original
+    }
+    
+    // Clear processing state for reuse
+    private void ClearProcessingState()
+    {
+        SquareContours.Clear();
+        RejectedContours.Clear();
+        RecoveredContours.Clear();
+        SortedContours.Clear();
+        MeanLabValues.Clear();
+        Boundary = Vector4.zero;
     }
 
     /* ---------- helpers ---------- */
@@ -96,9 +140,18 @@ public class CubeProcessor
         Imgproc.findContours(dilated, contours, hierarchy,
                              Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_SIMPLE);
 
+        // Calculate adaptive area thresholds based on image size
+        float imageArea = Resized.rows() * Resized.cols(); // Total pixels in processed image
+        float minStickerArea = imageArea * MinAreaPercent;  // Dynamic minimum threshold
+        float maxStickerArea = imageArea * MaxAreaPercent;  // Dynamic maximum threshold
+
+        // Debug log the calculated thresholds
+        // Debug.Log($"[DetectSquares] Image size: {Resized.cols()}×{Resized.rows()}, Total area: {imageArea:F0}");
+        // Debug.Log($"[DetectSquares] Adaptive thresholds: min={minStickerArea:F0} ({MinAreaPercent * 100:F2}%), max={maxStickerArea:F0} ({MaxAreaPercent * 100:F1}%)");
         // Debug.Log($"[DetectSquares] Found {contours.Count} total contours");
 
         int candidateCount = 0;
+        int acceptedCount = 0;
         foreach (MatOfPoint c in contours)
         {
             double peri = Imgproc.arcLength(new MatOfPoint2f(c.toArray()), true);
@@ -113,26 +166,38 @@ public class CubeProcessor
 
             double aspect = Math.Max(w, h) / Math.Min(w, h);
             double area = w * h;
+            
+            // Determine acceptance with adaptive thresholds
+            bool aspectOk = aspect > 0.8 && aspect < 1.2;
+            bool areaOk = area > minStickerArea && area < maxStickerArea;
+            bool accepted = aspectOk && areaOk;
 
-            // Log first few candidates for debugging
-            // if (candidateCount < 5)
-            // {
-            //     Debug.Log($"  Candidate {candidateCount}: w={w:F1}, h={h:F1}, aspect={aspect:F2}, area={area:F0} -> " + 
-            //              (aspect > 0.8 && aspect < 1.2 && area > 1000 && area < 10000 ? "ACCEPT" : "REJECT"));
-            // }
+            // Log first few candidates for debugging with detailed threshold info
+            if (candidateCount < 8)
+            {
+                // Debug.Log($"  Candidate {candidateCount}: w={w:F1}, h={h:F1}, aspect={aspect:F2} {(aspectOk ? "✓" : "✗")}, " + 
+                        //  $"area={area:F0} {(areaOk ? "✓" : "✗")} -> {(accepted ? "ACCEPT" : "REJECT")}");
+            }
             candidateCount++;
 
             // Use original detected contour instead of artificial rectangle
-            if (aspect > 0.8 && aspect < 1.2 && area > 1000 && area < 10000)
+            if (accepted)
+            {
                 SquareContours.Add(c);
+                acceptedCount++;
+            }
             else
+            {
                 RejectedContours.Add(c);
+            }
         }
 
-        // Debug.Log($"[DetectSquares] Valid squares: {SquareContours.Count}, Rejected: {RejectedContours.Count}");
+        // Debug.Log($"[DetectSquares] Results: {acceptedCount} accepted, {RejectedContours.Count} rejected out of {candidateCount} candidates");
         
         if (SquareContours.Count == 0)
-            throw new Exception($"No valid contours detected in {ImagePath ?? "input Mat"}");
+            throw new Exception($"No valid contours detected in {ImagePath ?? "input Mat"} with adaptive thresholds [{minStickerArea:F0}-{maxStickerArea:F0}]");
+        
+        hierarchy.Dispose();
     }
     
     /* ---------- step 3a: prune to cube boundary ---------- */
@@ -375,7 +440,7 @@ public class CubeProcessor
     public void ComputeColors()
     {
         MeanLabValues.Clear();
-        Debug.Log($"[ComputeColors] Extracting colors from {SortedContours.Count} contours...");
+        // Debug.Log($"[ComputeColors] Extracting colors from {SortedContours.Count} contours...");
         
         int stickerIndex = 0;
         foreach (var contour in SortedContours)
@@ -489,10 +554,10 @@ public class CubeProcessor
     }
 
     /* ---------- main processing pipeline ---------- */
-    public List<Vector3> ProcessImage()
+    public List<Vector3> ProcessImage(bool realTime = false)
     {
         string source = ImagePath ?? "input Mat";
-        Debug.Log($"[ProcessImage] Starting processing pipeline for {source}");
+        // Debug.Log($"[ProcessImage] Starting processing pipeline for {source}");
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         
         Mat dilated = ReadAndPreprocess();
@@ -500,25 +565,70 @@ public class CubeProcessor
         PruneToCubeBoundary();
         SelectAndSortContours();
         RecoverMissingContours();
-        ComputeColors();
+        if (!realTime)
+        {
+            ComputeColors();
+            Debug.Log($"[ProcessImage] ✅ Result: {MeanLabValues.Count} stickers with LAB colors extracted");
+            // Final validation
+            if (MeanLabValues.Count == 9)
+            {
+                Debug.Log("[ProcessImage] ✅ SUCCESS: Found exactly 9 stickers (complete 3x3 grid)");
+            }
+            else
+            {
+                Debug.LogWarning($"[ProcessImage] ⚠️  WARNING: Expected 9 stickers, got {MeanLabValues.Count}");
+            }
+        }
+        
         
         dilated.Dispose(); // Clean up
         stopwatch.Stop();
         
-        Debug.Log($"[ProcessImage] ✅ Pipeline complete in {stopwatch.ElapsedMilliseconds}ms");
-        Debug.Log($"[ProcessImage] ✅ Result: {MeanLabValues.Count} stickers with LAB colors extracted");
-        
-        // Final validation
-        if (MeanLabValues.Count == 9)
-        {
-            Debug.Log("[ProcessImage] ✅ SUCCESS: Found exactly 9 stickers (complete 3x3 grid)");
-        }
+        // Debug.Log($"[ProcessImage] ✅ Pipeline complete in {stopwatch.ElapsedMilliseconds}ms");
+
+        if (realTime)
+            return new List<Vector3>(); // Empty list indicates no colors
         else
+            return MeanLabValues; // Full color data
+    }
+    
+    /* ---------- disposal ---------- */
+    private bool disposed = false;
+    
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+    
+    protected virtual void Dispose(bool disposing)
+    {
+        if (!disposed)
         {
-            Debug.LogWarning($"[ProcessImage] ⚠️  WARNING: Expected 9 stickers, got {MeanLabValues.Count}");
+            if (disposing)
+            {
+                // Dispose managed Mat objects
+                Image?.Dispose();
+                Resized?.Dispose();
+                
+                // Clear collections to help GC
+                SquareContours?.Clear();
+                RejectedContours?.Clear();
+                RecoveredContours?.Clear();
+                SortedContours?.Clear();
+                MeanLabValues?.Clear();
+                
+                Debug.Log("[CubeProcessor] Disposed - all Mats cleaned up");
+            }
+            
+            disposed = true;
         }
-        
-        return MeanLabValues;
+    }
+    
+    // Finalizer in case Dispose isn't called
+    ~CubeProcessor()
+    {
+        Dispose(false);
     }
     
 }

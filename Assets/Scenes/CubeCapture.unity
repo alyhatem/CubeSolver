@@ -869,7 +869,9 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: Real-Time Sticker Detection (FIX)
+  m_text: 'Real-Time Sticker Detection
+
+'
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 422326879dda847708c8837b3508fcc1, type: 2}
   m_sharedMaterial: {fileID: -8147326720588957944, guid: 422326879dda847708c8837b3508fcc1,
@@ -3679,7 +3681,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &2057204566
 Transform:
   m_ObjectHideFlags: 0
@@ -3689,7 +3691,7 @@ Transform:
   m_GameObject: {fileID: 2057204565}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalPosition: {x: 0.29, y: 0.185, z: 0.076}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -3709,25 +3711,32 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   arCameraManager: {fileID: 2512387468973847747}
   hintText: {fileID: 409527071}
-  wireframeMaterial: {fileID: -2505642851634945670, guid: f396e3429a4864fc2ad497cb3ce5fe2c,
+  frameSkipCount: 3
+  centerAnchorPrefab: {fileID: 6158887473645855396, guid: 5e13bf0d553494983b1d9c801c63a890,
     type: 3}
-  debugImage: {fileID: 451447005}
-  debugImage1: {fileID: 517044885}
-  showDebugUI: 1
-  frameSkipCount: 2
-  analysisWidth: 320
-  analysisHeight: 240
-  minFaceArea: 5000
-  maxReprojectionError: 8
-  showDebugInfo: 1
-  saveDebugImages: 0
-  wireframe: {fileID: 0}
-  frameCounter: 0
-  lastProcessTime: 0
-  isProcessing: 0
-  isCubeTracked: 0
-  debugFrameCounter: 0
-  lastDebugUpdateTime: 0
+  coordinateOffset: {x: 0, y: -270}
+  minStickerAreaPercent: 0.0008
+  maxStickerAreaPercent: 0.08
+  animatedArrowPrefab: {fileID: 2620953805023737550, guid: 1788a2d87e0b93e4584acf8d8df30980,
+    type: 3}
+  solverModeEnabled: 0
+  faceOccluderPrefab: {fileID: 2047190104666108388, guid: 12345678abcdef123456789012345678,
+    type: 3}
+  occluderScale: 1.6
+  occluderEpsilon: 0.001
+  lockOrientationToCamera: 1
+  useCameraUp: 1
+  rotationSmoothing: 0.1
+  modelForwardAdjustment: {x: 0, y: 0, z: 0, w: 1}
+  enableTwistTracking: 1
+  invertRoll: 0
+  rollSmoothing: 0.15
+  maxRollJumpPerFrame: 45
+  minRowsForRoll: 1
+  coastDuration: 0.35
+  cubeSize: 57
+  depthSmoothing: 0.7
+  maxDepthVariance: 0.2
 --- !u!1 &2076951683
 GameObject:
   m_ObjectHideFlags: 0
