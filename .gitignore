@@ -94,3 +94,6 @@ crashlytics-build.properties
 # third-party asset (OpenCVForUnity)
 Assets/OpenCVForUnity*/
 
+# Ignore Claude context file
+/CLAUDE.md
+
