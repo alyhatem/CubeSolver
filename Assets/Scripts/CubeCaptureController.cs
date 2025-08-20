@@ -27,21 +27,10 @@ public class CubeCaptureController : MonoBehaviour
 
     [Header("UI Panels")]
     public GameObject capturePanel;
-    public GameObject debugPanel;
 
     [Header("UI Elements")]
     public TextMeshProUGUI captureGuideText;
     public Button captureButton;
-
-    [Header("Crop Settings")]
-    public RectTransform gridOverlay; // Assign your UI overlay in Inspector
-    public float cropPadding = 0.1f; // 10% padding
-
-    [Header("Debug UI")]
-    public TMP_Dropdown faceDropdown;
-    public RawImage debugImage;
-    public Button toggleButton;
-    public TextMeshProUGUI toggleButtonText;
 
     private readonly string[] faceKeys = { "U", "R", "F", "D", "L", "B" };
     private readonly string[] descriptiveFaceKeys = { "Top", "Right", "Front", "Bottom", "Left", "Back" };
@@ -54,27 +43,15 @@ public class CubeCaptureController : MonoBehaviour
     private Dictionary<string, List<MatOfPoint>> faceSortedContours = new Dictionary<string, List<MatOfPoint>>();
     private Dictionary<string, List<MatOfPoint>> faceRejectedContours = new Dictionary<string, List<MatOfPoint>>();
     private Dictionary<string, List<MatOfPoint>> faceRecoveredContours = new Dictionary<string, List<MatOfPoint>>();
-    private bool showContours = false;
     
     // Color data storage for immediate processing
     private Dictionary<string, List<Vector3>> faceColorData = new Dictionary<string, List<Vector3>>();
     
-    private string currentSelectedFace = "U";
 
     void Start()
     {
         captureButton.onClick.AddListener(OnCapturePressed);
-        
-        // Initialize debug UI
-        if (faceDropdown != null && toggleButton != null)
-        {
-            faceDropdown.onValueChanged.AddListener(OnFaceSelectionChanged);
-            toggleButton.onClick.AddListener(OnToggleContours);
-            if (toggleButtonText != null)
-                toggleButtonText.text = "Show Contours"; // Initial state
-        }
-        
-        ShowCaptureUI();
+        capturePanel.SetActive(true);;
         UpdateHint();
     }
 
@@ -82,67 +59,6 @@ public class CubeCaptureController : MonoBehaviour
     {
         if (currentFaceIndex < faceKeys.Length)
             captureGuideText.text = $"Show {descriptiveFaceKeys[currentFaceIndex]} Face";
-        else
-            captureGuideText.text = "All faces captured.";
-    }
-
-    void ShowCaptureUI()
-    {
-        capturePanel.SetActive(true);
-        debugPanel.SetActive(false);
-    }
-
-    void ShowDebugUI()
-    {
-        capturePanel.SetActive(false);
-        debugPanel.SetActive(true);
-    }   
-
-    private UnityEngine.Rect GetCropRect()
-    {
-        // Get overlay corners in world space (Vector3[])
-        Vector3[] corners = new Vector3[4];
-        gridOverlay.GetWorldCorners(corners);
-        // Debug.Log("overlayCorners: " + corners[0] + "," + corners[1] + corners[2] + "," + corners[3]);
-
-        // Convert to screen space (Vector2)
-        Vector2 min = new Vector2(float.MaxValue, float.MaxValue);
-        Vector2 max = new Vector2(float.MinValue, float.MinValue);
-
-        foreach (Vector3 corner in corners)
-        {
-            Vector2 screenPoint = RectTransformUtility.WorldToScreenPoint(null, corner);
-            min.x = Mathf.Min(min.x, screenPoint.x);
-            min.y = Mathf.Min(min.y, screenPoint.y);
-            max.x = Mathf.Max(max.x, screenPoint.x);
-            max.y = Mathf.Max(max.y, screenPoint.y);
-        }
-        float padX = (max.x - min.x) * cropPadding * 0.5f;
-        float padY = (max.y - min.y) * cropPadding * 0.5f;
-
-        return new UnityEngine.Rect(min.x, Screen.height - max.y, max.x - min.x, max.y - min.y);
-    }
-
-    private Texture2D CropTexture(Texture2D src, UnityEngine.Rect cropRect)
-    {
-        // Convert screen coordinates to texture coordinates
-        int x = Mathf.FloorToInt(cropRect.x * src.width / Screen.width);
-        int y = Mathf.FloorToInt(cropRect.y * src.height / Screen.height);
-        int width = Mathf.FloorToInt(cropRect.width * src.width / Screen.width);
-        int height = Mathf.FloorToInt(cropRect.height * src.height / Screen.height);
-        
-        // Clamp to texture dimensions
-        x = Mathf.Clamp(x, 0, src.width - 1);
-        y = Mathf.Clamp(y, 0, src.height - 1);
-        width = Mathf.Clamp(width, 1, src.width - x);
-        height = Mathf.Clamp(height, 1, src.height - y);
-        
-        // Extract pixels
-        Color[] pixels = src.GetPixels(x, y, width, height);
-        Texture2D cropped = new Texture2D(width, height);
-        cropped.SetPixels(pixels);
-        cropped.Apply();
-        return cropped;
     }
 
     unsafe void OnCapturePressed()
@@ -179,13 +95,9 @@ public class CubeCaptureController : MonoBehaviour
         // After texture is created and .Apply() is called
 
         // For processing: Use full rotated image (better for OpenCV detection)
-        // For preview: Show cropped version
-        UnityEngine.Rect cropRect = GetCropRect();
-        Texture2D croppedForPreview = CropTexture(capturedTexture, cropRect);
 
         // Keep full image for processing, cropped for preview
         fullImageForProcessing = capturedTexture;
-        capturedTexture = croppedForPreview; // This shows in preview
 
         // ShowReviewUI();
         if (capturedTexture == null || fullImageForProcessing == null)
@@ -193,7 +105,7 @@ public class CubeCaptureController : MonoBehaviour
 
         string faceKey = faceKeys[currentFaceIndex];
         string path = Path.Combine(Application.persistentDataPath, $"face_{faceKey}.jpg");
-        
+
         // Save the FULL image for processing (not the cropped preview)
         byte[] jpgData = fullImageForProcessing.EncodeToJPG(95);
         File.WriteAllBytes(path, jpgData);
@@ -234,7 +146,7 @@ public class CubeCaptureController : MonoBehaviour
                 // Auto-advance to next face
                 currentFaceIndex++;
                 UpdateHint();
-                ShowCaptureUI();
+                capturePanel.SetActive(true);;
                 
                 // Brief success feedback
                 StartCoroutine(ShowSuccessFeedback($"{descriptiveFaceKeys[currentFaceIndex - 1]} Face Captured!"));
@@ -249,48 +161,46 @@ public class CubeCaptureController : MonoBehaviour
             {
                 // FAILURE: Less than 9 stickers - show review panel
                 Debug.Log($"⚠️ [CubeCaptureController] Face {faceKey}: Only {labColors.Count} stickers detected - showing review panel");
-                // ShowReviewUI();
 
                 // Brief failure feedback
                 StartCoroutine(ShowFailureFeedback($"Only {labColors.Count} stickers detected. Retake"));
-                
-                // Update hint text with specific feedback
-                // retakeGuideText.text = $"Only {labColors.Count} stickers detected";
             }
         }
         catch (Exception ex)
         {
             Debug.LogError($"❌ [CubeCaptureController] Processing error for face {faceKey}: {ex.Message}");
-            // ShowReviewUI();
             // Brief failure feedback
             StartCoroutine(ShowFailureFeedback("Processing Failed"));
-            // retakeGuideText.text = "Processing Failed";
         }
     }
     
     System.Collections.IEnumerator ShowSuccessFeedback(string message)
     {
         string originalText = captureGuideText.text;
-        
         captureGuideText.text = message;
-        
         yield return new WaitForSeconds(1.0f);
-        
         captureGuideText.text = originalText;
     }
 
-    System.Collections.IEnumerator ShowFailureFeedback(string message)
+    System.Collections.IEnumerator ShowFailureFeedback(string message, bool restart = false)
     {
         string originalText = captureGuideText.text;
         Color originalTextColor = captureGuideText.color;
-
         captureGuideText.text = message;
         captureGuideText.color = Color.red;
-
         yield return new WaitForSeconds(1.5f);
-
-        captureGuideText.text = originalText;
-        captureGuideText.color = originalTextColor;
+        if (restart)
+        {
+            captureGuideText.color = originalTextColor;
+            captureGuideText.text = "Show Top Face";
+            RestartCaptureProcess();
+            
+        }
+        else
+        {
+            captureGuideText.text = originalText;
+            captureGuideText.color = originalTextColor;   
+        }
     }
     
     void ProcessAllStoredFaces()
@@ -363,11 +273,11 @@ public class CubeCaptureController : MonoBehaviour
             
             // ─── PHASE 3: CUBE STRING VALIDATION ───────────────────────
             Debug.Log("🔍 [CubeCaptureController] Validating cube string before solving...");
-            
+
             if (ValidateCubeString(cubeString))
             {
                 Debug.Log("🏆 [CubeCaptureController] SUCCESS: Cube string validated - ready for solving!");
-                
+
                 // ─── PHASE 4: KOCIEMBA SOLVER ───────────────────────
                 SolveCubeWithKociemba(cubeString);
             }
@@ -376,10 +286,9 @@ public class CubeCaptureController : MonoBehaviour
                 Debug.LogError("❌ [CubeCaptureController] Cube string validation FAILED - invalid face distribution");
                 Debug.LogError("   This indicates a classification error or incomplete cube capture");
                 Debug.LogError("   Recommendation: Restart capture process and ensure good lighting/cube visibility");
-                
-                // Show error and restart option (TODO: implement UI)
-                // For now, automatically restart the process
-                RestartCaptureProcess();
+
+                // Show error feedback to user before restarting
+                StartCoroutine(ShowFailureFeedback("Classification failed. Retake all faces", true));
             }
         }
         catch (Exception ex)
@@ -464,8 +373,8 @@ public class CubeCaptureController : MonoBehaviour
         CleanupTextures();
         
         // Reset UI to initial capture state
-        UpdateHint();
-        ShowCaptureUI();
+        // UpdateHint();
+        capturePanel.SetActive(true);;
         
         Debug.Log("✅ [CubeCaptureController] Capture process restarted - ready for Face 1");
     }
@@ -523,83 +432,6 @@ public class CubeCaptureController : MonoBehaviour
         }
         
         Debug.Log("🗑️ [CubeCaptureController] Textures cleaned up");
-    }
-
-
-    // Debug UI Methods
-    private void OnFaceSelectionChanged(int value)
-    {
-        currentSelectedFace = faceKeys[value];
-        UpdateDebugDisplay();
-    }
-
-    private void OnToggleContours()
-    {
-        showContours = !showContours;
-        if (toggleButtonText != null)
-            toggleButtonText.text = showContours ? "Show Original" : "Show Contours";
-        UpdateDebugDisplay();
-    }
-
-    private void UpdateDebugDisplay()
-    {
-        if (!faceImages.ContainsKey(currentSelectedFace) || debugImage == null) return;
-        
-        Mat displayImage;
-        if (showContours)
-        {
-            // Create copy and draw color-coded contours
-            displayImage = faceImages[currentSelectedFace].clone();
-            
-            // Draw rejected contours in red (BGR format: 0,0,255 = red)
-            if (faceRejectedContours.ContainsKey(currentSelectedFace))
-            {
-                foreach (var contour in faceRejectedContours[currentSelectedFace])
-                {
-                    if (contour != null && contour.total() > 0)
-                        Imgproc.drawContours(displayImage, new List<MatOfPoint> { contour }, -1, new Scalar(0, 0, 255), 2);
-                }
-            }
-            
-            // Draw recovered contours in blue (BGR format: 255,0,0 = blue)
-            if (faceRecoveredContours.ContainsKey(currentSelectedFace))
-            {
-                foreach (var contour in faceRecoveredContours[currentSelectedFace])
-                {
-                    if (contour != null && contour.total() > 0)
-                        Imgproc.drawContours(displayImage, new List<MatOfPoint> { contour }, -1, new Scalar(255, 0, 0), 2);
-                }
-            }
-            
-            // Draw accepted contours in green (BGR format: 0,255,0 = green)
-            if (faceSortedContours.ContainsKey(currentSelectedFace))
-            {
-                foreach (var contour in faceSortedContours[currentSelectedFace])
-                {
-                    if (contour != null && contour.total() > 0)
-                        Imgproc.drawContours(displayImage, new List<MatOfPoint> { contour }, -1, new Scalar(0, 255, 0), 2);
-                }
-            }
-        }
-        else
-        {
-            // Show original image - create a copy to avoid modifying stored data
-            displayImage = faceImages[currentSelectedFace].clone();
-        }
-        
-        // Convert BGR to RGB for Unity display
-        Mat rgbImage = new Mat();
-        Imgproc.cvtColor(displayImage, rgbImage, Imgproc.COLOR_BGR2RGB);
-        
-        // Convert to texture and display
-        Texture2D tex = new Texture2D(rgbImage.cols(), rgbImage.rows(), TextureFormat.RGBA32, false);
-        OpenCVMatUtils.MatToTexture2D(rgbImage, tex);
-        debugImage.texture = tex;
-        
-        // Clean up temporary mats
-        if (showContours || !showContours) // Always dispose displayImage since we're cloning now
-            displayImage.Dispose();
-        rgbImage.Dispose();
     }
 
     // ─── KOCIEMBA SOLVER INTEGRATION ─────────────────────────────────────────

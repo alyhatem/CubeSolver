@@ -1173,7 +1173,7 @@ MonoBehaviour:
   frameSkipCount: 2
   centerAnchorPrefab: {fileID: 6158887473645855396, guid: 5e13bf0d553494983b1d9c801c63a890,
     type: 3}
-  coordinateOffset: {x: 0, y: 0}
+  coordinateOffset: {x: 0, y: -250}
   minStickerAreaPercent: 0.0008
   maxStickerAreaPercent: 0.08
   animatedArrowPrefab: {fileID: 2620953805023737550, guid: 1788a2d87e0b93e4584acf8d8df30980,
@@ -1181,7 +1181,7 @@ MonoBehaviour:
   solverModeEnabled: 1
   faceOccluderPrefab: {fileID: 2047190104666108388, guid: 12345678abcdef123456789012345678,
     type: 3}
-  occluderScale: 1.03
+  occluderScale: 1
   occluderEpsilon: 0.001
   lockOrientationToCamera: 1
   useCameraUp: 1

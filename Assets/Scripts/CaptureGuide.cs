@@ -100,7 +100,7 @@ public class CaptureGuide : MonoBehaviour
 
     [Header("Depth Estimation")]
     [Range(40f, 80f)]
-    public float cubeSize = 57f; // Standard Rubik's cube size in millimeters
+    public float cubeSize = 100f; // Enlarged for debugging face occluder visibility (standard: 57mm)
     [Range(0.1f, 0.9f)]
     public float depthSmoothing = 0.7f; // Exponential moving average for depth
     [Range(0.1f, 0.5f)]
@@ -122,34 +122,34 @@ public class CaptureGuide : MonoBehaviour
     private readonly Dictionary<string, (Vector3 position, Vector3 eulerRotation)> moveMapping = new()
     {
         // Face Up (U) - Arrow above cube
-        {"U",  (Vector3.up * 0.30f, new Vector3(0, 0, 180))},        // Above cube, no rotation
-        {"U'", (Vector3.up * 0.30f, new Vector3(0, 0,   0))},     // Above cube, 180° Y rotation
-        {"U2", (Vector3.up * 0.30f, new Vector3(0, 0, 180))},      // Above cube, 90° Y rotation
+        {"U",  (Vector3.up * 0.60f, new Vector3(0, 0, 180))},        // Above cube, no rotation
+        {"U'", (Vector3.up * 0.60f, new Vector3(0, 0,   0))},     // Above cube, 180° Y rotation
+        {"U2", (Vector3.up * 0.60f, new Vector3(0, 0, 180))},      // Above cube, 90° Y rotation
         
         // Face Right (R) - Arrow to the right of cube
-        {"R",  (Vector3.right * -0.30f, new Vector3(0, 0, -90))},    // Right of cube, 90° Y rotation
-        {"R'", (Vector3.right * -0.30f, new Vector3(0, 0,  90))},  // Right of cube, 270° Y rotation
-        {"R2", (Vector3.right * -0.30f, new Vector3(0, 0, -90))},  // Right of cube, 180° Y rotation
+        {"R",  (new Vector3(-0.28f,  0.35f,    0.05f), new Vector3(0, 0, -90))},    // Right of cube, 90° Y rotation
+        {"R'", (new Vector3(-0.28f,  0.35f,    0.05f), new Vector3(0, 0,  90))},  // Right of cube, 270° Y rotation
+        {"R2", (new Vector3(-0.28f,  0.35f,    0.05f), new Vector3(0, 0, -90))},  // Right of cube, 180° Y rotation
         
         // Face Front (F) - Arrow in front of cube
-        {"F",  (new Vector3(0,  0.35f, -0.035f), new Vector3(-50, 0, 0))},  // Front of cube, 90° X rotation
-        {"F'", (new Vector3(0, -0.35f, -0.035f), new Vector3( 50, 0, 0))}, // Front of cube, -90° X rotation
-        {"F2", (new Vector3(0,  0.35f, -0.035f), new Vector3(-50, 0, 0))}, // Front of cube, 90° Z rotation
+        {"F",  (new Vector3(  0.0f,  0.65f,  -0.035f), new Vector3(-50, 0, 0))},  // Front of cube, 90° X rotation
+        {"F'", (new Vector3(  0.0f,  0.05f,  -0.035f), new Vector3( 50, 0, 0))}, // Front of cube, -90° X rotation
+        {"F2", (new Vector3(  0.0f,  0.65f,  -0.035f), new Vector3(-50, 0, 0))}, // Front of cube, 90° Z rotation
         
         // Face Down (D) - Arrow below cube
-        {"D",  (Vector3.down * 0.30f, new Vector3(0, 0,   0))},    // Below cube, 180° X rotation
-        {"D'", (Vector3.down * 0.30f, new Vector3(0, 0, 180))}, // Below cube, 180° X + 180° Y rotation
-        {"D2", (Vector3.down * 0.30f, new Vector3(0, 0,   0))},  // Below cube, 180° X + 90° Y rotation
+        {"D",  (new Vector3(  0.0f,  0.05f,    0.05f), new Vector3(0, 0,   0))},    // Below cube, 180° X rotation
+        {"D'", (new Vector3(  0.0f,  0.05f,    0.05f), new Vector3(0, 0, 180))}, // Below cube, 180° X + 180° Y rotation
+        {"D2", (new Vector3(  0.0f,  0.05f,    0.05f), new Vector3(0, 0,   0))},  // Below cube, 180° X + 90° Y rotation
         
         // Face Left (L) - Arrow to the left of cube
-        {"L",  (Vector3.left * -0.32f, new Vector3(0, 0,  90))},    // Left of cube, 270° Y rotation
-        {"L'", (Vector3.left * -0.32f, new Vector3(0, 0, -90))},    // Left of cube, 90° Y rotation
-        {"L2", (Vector3.left * -0.32f, new Vector3(0, 0,  90))},   // Left of cube, 180° Y rotation
+        {"L",  (new Vector3( 0.30f,  0.35f,    0.05f), new Vector3(0, 0,  90))},    // Left of cube, 270° Y rotation
+        {"L'", (new Vector3( 0.30f,  0.35f,    0.05f), new Vector3(0, 0, -90))},    // Left of cube, 90° Y rotation
+        {"L2", (new Vector3( 0.30f,  0.35f,    0.05f), new Vector3(0, 0,  90))},   // Left of cube, 180° Y rotation
         
         // Face Back (B) - Arrow behind cube - TESTING with simple values
-        {"B",  (new Vector3(0, 0, -0.05f), new Vector3( 50, 0, 0))},    // TEST: Simple behind position
-        {"B'", (new Vector3(0, 0, -0.05f), new Vector3(-50, 0, 0))},    // TEST: Simple behind position  
-        {"B2", (new Vector3(0, 0, -0.05f), new Vector3( 50, 0, 0))}     // TEST: Simple behind position
+        {"B",  (new Vector3(  0.0f,  0.05f,   -0.03f), new Vector3( 50, 0, 0))},    // TEST: Simple behind position
+        {"B'", (new Vector3(  0.0f,  0.65f,   -0.03f), new Vector3(-50, 0, 0))},    // TEST: Simple behind position  
+        {"B2", (new Vector3(  0.0f,  0.05f,   -0.03f), new Vector3( 50, 0, 0))}     // TEST: Simple behind position
     };
 
 
@@ -443,7 +443,7 @@ public class CaptureGuide : MonoBehaviour
             return (smoothedDepth, false);
         }
 
-        Debug.Log($"[EstimateDepthFromGrid] Valid depth estimate: {estimatedDepth:F3}m");
+        // Debug.Log($"[EstimateDepthFromGrid] Valid depth estimate: {estimatedDepth:F3}m");
         return (estimatedDepth, true);
     }
 
@@ -1154,7 +1154,7 @@ public class CaptureGuide : MonoBehaviour
         directionArrow.transform.SetParent(centerAnchor.transform);
 
         // Position the arrow 28cm above the anchor in world space (Y-axis)
-        directionArrow.transform.localPosition = Vector3.up * 0.35f; // 28cm = 0.28m
+        directionArrow.transform.localPosition = new Vector3(0.0f, 0.85f, 0.0f); // 28cm = 0.28m
         // directionArrow.transform.localPosition = Vector3.forward * 0.1f;
 
         // Scale the arrow for better visibility
@@ -1218,11 +1218,15 @@ public class CaptureGuide : MonoBehaviour
 
         // Calculate face size from cubeSize parameter (default 57mm)
         float faceSizeM = cubeSize / 1000f; // Convert millimeters to meters
+        float finalScale = faceSizeM * occluderScale * 10;
 
         // Position on front face (+Z) with epsilon push toward camera to prevent z-fighting
-        faceOccluder.transform.localPosition = new Vector3(0, 0, faceSizeM * 0.5f + occluderEpsilon);
+        faceOccluder.transform.localPosition = new Vector3(0, 0, -0.4f);
         faceOccluder.transform.localRotation = Quaternion.identity; // No rotation relative to anchor
-        faceOccluder.transform.localScale = Vector3.one * faceSizeM * occluderScale;
+        faceOccluder.transform.localScale = Vector3.one * finalScale;
+        
+        // Debug scale calculations
+        Debug.Log($"[OCCLUDER DEBUG] Scale calculation: cubeSize={cubeSize}mm → faceSizeM={faceSizeM:F3}m → finalScale={finalScale:F3}m (occluderScale={occluderScale})");
 
         // Configure renderer settings and verify material
         var renderer = faceOccluder.GetComponent<Renderer>();
@@ -1300,7 +1304,7 @@ public class CaptureGuide : MonoBehaviour
             {
                 // Use Z component as distance, position arrow behind cube relative to camera
                 float distance = Mathf.Abs(position.z);
-                Vector3 worldPosition = centerAnchor.transform.position - camera.transform.forward * distance;
+                Vector3 worldPosition = centerAnchor.transform.position - camera.transform.forward * -distance;
                 directionArrow.transform.position = worldPosition;
             }
             else
@@ -1348,6 +1352,27 @@ public class CaptureGuide : MonoBehaviour
             
             Debug.Log($"[MOVE DEBUG] '{move}' - Arrow Z: {arrowWorldPos.z:F3}, Occluder Z: {occluderWorldPos.z:F3}");
             Debug.Log($"[MOVE DEBUG] Delta Z: actual={deltaZ:F3}, expected={expectedDeltaZ:F3} - {depthStatus}");
+            
+            // Additional face occluder debug information
+            Vector3 occluderLocalPos = faceOccluder.transform.localPosition;
+            Vector3 occluderLocalScale = faceOccluder.transform.localScale;
+            Quaternion occluderLocalRot = faceOccluder.transform.localRotation;
+            
+            Debug.Log($"[OCCLUDER DEBUG] World pos: {occluderWorldPos}");
+            Debug.Log($"[OCCLUDER DEBUG] Local pos: {occluderLocalPos} (relative to centerAnchor)");
+            Debug.Log($"[OCCLUDER DEBUG] Local scale: {occluderLocalScale}");
+            Debug.Log($"[OCCLUDER DEBUG] Local rotation: {occluderLocalRot.eulerAngles}");
+            
+            // Camera distance context
+            Camera camera = Camera.main ?? arCameraManager.GetComponent<Camera>();
+            if (camera != null)
+            {
+                float cameraToOccluder = Vector3.Distance(camera.transform.position, occluderWorldPos);
+                float cameraToArrow = Vector3.Distance(camera.transform.position, arrowWorldPos);
+                float cameraToAnchor = Vector3.Distance(camera.transform.position, centerAnchor.transform.position);
+                
+                Debug.Log($"[OCCLUDER DEBUG] Distance from camera: Occluder={cameraToOccluder:F3}m, Arrow={cameraToArrow:F3}m, Anchor={cameraToAnchor:F3}m");
+            }
         }
         else
         {
